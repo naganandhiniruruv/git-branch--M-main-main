@@ -1,5 +1,5 @@
-const CACHE = "sheplates-v3-3-1-shell";
-const SHELL = ["/", "/manifest.webmanifest", "/sheplates-logo.png", "/sheplates-hero.png"];
+const CACHE = "sheplates-v6-ultra-shell";
+const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/sheplates-logo.png", "/sheplates-hero.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -23,8 +23,8 @@ self.addEventListener("push", (event) => {
   try { payload = { ...payload, ...event.data.json() }; } catch { /* safe defaults */ }
   event.waitUntil(self.registration.showNotification(payload.title, {
     body: payload.body,
-    icon: "/sheplates-logo.png",
-    badge: "/sheplates-logo.png",
+    icon: "/icon-192.png",
+    badge: "/icon-192.png",
     data: { url: payload.url },
     tag: "sheplates-update",
   }));

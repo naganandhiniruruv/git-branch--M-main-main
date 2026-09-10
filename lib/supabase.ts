@@ -217,17 +217,15 @@ export async function saveLiveCampaign(input: { id?: string; name: string; audie
 }
 
 export async function uploadLiveProductImage(vendorId: string, dataUrl: string) {
-  const supabase = getSupabaseBrowserClient();
-  if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) return dataUrl;
-  const mime = match[1];
-  const extension = mime.includes("webp") ? "webp" : mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
-  const blob = await (await fetch(dataUrl)).blob();
-  const objectPath = `${vendorId}/${crypto.randomUUID()}.${extension}`;
-  const upload = await supabase.storage.from("product-images").upload(objectPath, blob, { contentType: mime, upsert: false });
-  if (upload.error) throw upload.error;
-  return supabase.storage.from("product-images").getPublicUrl(objectPath).data.publicUrl;
+  const token = await getAccessToken();
+  const response = await fetch("/api/product-image-upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ vendorId, dataUrl }),
+  });
+  const result = await response.json() as { publicUrl?: string; error?: string };
+  if (!response.ok || !result.publicUrl) throw new Error(result.error || "Image upload failed.");
+  return result.publicUrl;
 }
 
 export async function saveLiveVendorProduct(input: {
@@ -375,4 +373,97 @@ export async function createStaffUser(input: { name: string; email: string; role
   const json = await response.json() as { userId?: string; email?: string; temporaryPassword?: string; error?: string };
   if (!response.ok || !json.temporaryPassword) throw new Error(json.error || "User could not be created");
   return json as { userId: string; email: string; temporaryPassword: string };
+}
+
+export async function requestEmailVerificationCode(input: { name: string; email: string; role: "customer" | "vendor" }) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Account verification is unavailable in this deployment.");
+  const { error } = await supabase.auth.signInWithOtp({
+    email: input.email,
+    options: { shouldCreateUser: true, data: { full_name: input.name, role: input.role } },
+  });
+  if (error) throw error;
+}
+
+export async function verifyEmailCodeAndSetPassword(input: { email: string; token: string; password: string }) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Account verification is unavailable in this deployment.");
+  const verified = await supabase.auth.verifyOtp({ email: input.email, token: input.token, type: "email" });
+  if (verified.error || !verified.data.user) throw verified.error || new Error("The verification code is invalid or expired.");
+  const updated = await supabase.auth.updateUser({ password: input.password });
+  if (updated.error) throw updated.error;
+  return verified.data;
+}
+
+export type LiveCommerceSnapshot = {
+  orders: Array<Record<string, unknown>>;
+  schedules: Array<Record<string, unknown>>;
+  staff: Array<Record<string, unknown>>;
+  assignments: Array<Record<string, unknown>>;
+};
+
+async function commerceRequest(body?: Record<string, unknown>) {
+  const token = await getAccessToken();
+  const response = await fetch("/api/commerce", {
+    method: body ? "POST" : "GET",
+    headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const result = await response.json() as Record<string, unknown> & { error?: string };
+  if (!response.ok) throw new Error(result.error || "The latest commerce data could not be saved.");
+  return result;
+}
+
+export async function loadLiveCommerceSnapshot() {
+  return await commerceRequest() as unknown as LiveCommerceSnapshot;
+}
+
+export async function createLiveScheduledCheckout(input: {
+  productId: string; startDate: string; endDate?: string; recurrence: string; weekdays: string[]; slot: string;
+  quantity: number; unit: string; mode: string; customerPrice: number; perDeliveryTotal: number; total: number; whatsappReminder?: boolean;
+}) {
+  return commerceRequest({ action: "create_schedule", ...input });
+}
+
+export async function markLiveOrderPaid(input: { orderId: string; method: string; reference?: string }) {
+  return commerceRequest({ action: "mark_paid", ...input });
+}
+
+export async function saveLiveDeliveryStaff(input: { staffId?: string; name: string; phone: string; active?: boolean }) {
+  return commerceRequest({ action: "save_staff", ...input });
+}
+
+export async function deleteLiveDeliveryStaff(staffId: string) {
+  return commerceRequest({ action: "delete_staff", staffId });
+}
+
+export async function assignLiveDeliveryStaff(orderId: string, staffId?: string) {
+  return commerceRequest({ action: "assign_staff", orderId, staffId: staffId || "" });
+}
+
+export async function resubmitLiveVendorVerification(input: { documentNumber: string; expiryDate?: string }) {
+  return commerceRequest({ action: "resubmit_verification", ...input });
+}
+
+export async function saveLiveOutletCertificate(input: { outletId: string; certificateNumber: string; certificateExpiry?: string }) {
+  return commerceRequest({ action: "save_outlet_certificate", ...input });
+}
+
+export async function uploadLiveCertificate(input: { vendorId: string; file: File; outletId?: string }) {
+  const token = await getAccessToken();
+  const form = new FormData();
+  form.append("file", input.file);
+  form.append("vendorId", input.vendorId);
+  if (input.outletId) form.append("outletId", input.outletId);
+  const response = await fetch("/api/certificate-upload", { method: "POST", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: form });
+  const result = await response.json() as { path?: string; fileName?: string; error?: string };
+  if (!response.ok) throw new Error(result.error || "Certificate upload failed.");
+  return result;
+}
+
+export async function updateLiveOrderStatus(orderId: string, status: string) {
+  return commerceRequest({ action: "update_order_status", orderId, status });
+}
+export async function rescheduleLiveOrder(orderId: string, date: string, slot: string) {
+  return commerceRequest({ action: "reschedule_order", orderId, date, slot });
 }

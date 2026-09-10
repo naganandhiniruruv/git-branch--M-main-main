@@ -1,3 +1,7 @@
+# ShePlates v6.0.0 — Ultra Modern Mobile-First
+
+This build layers a new responsive design system and native-style mobile shell on top of the production-hardened commerce application. See `ULTRA_MODERN_V6_RELEASE_NOTES.md` for the UI changes and `MOBILE_APP_PACKAGING.md` for the later Android/iOS packaging path.
+
 # ShePlates V4.1.1 — Agentic Hyperlocal Commerce
 
 ## V4.1.1 — She Agent: real intent detection, memory, and photo-backed quality complaints

@@ -14,7 +14,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Toaster } from "@/components/ui/sonner";
 import { categories, plans, vendors } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
-import { isSupabaseConfigured, liveSignIn, liveSignUp } from "@/lib/supabase";
+import { isSupabaseConfigured, liveSignIn, requestEmailVerificationCode, verifyEmailCodeAndSetPassword } from "@/lib/supabase";
 
 type Audience = "customer" | "team";
 type AuthMode = "login" | "create";
@@ -78,25 +78,25 @@ export function ShePlatesEntry({ onLogin }: { onLogin: (session: DemoSession) =>
       <section className="section-hero text-white">
         <div className="absolute -left-28 top-40 size-72 rounded-full bg-[#5ba400]/30 blur-3xl" />
         <div className="absolute -right-24 top-24 size-96 rounded-full bg-[#ef3d3d]/15 blur-3xl" />
-        <header className="relative z-20 mx-auto flex h-24 max-w-7xl items-center px-5 sm:px-8">
+        <header className="relative z-20 mx-auto flex h-20 max-w-7xl items-center px-4 sm:h-24 sm:px-8">
           <Brand />
           <nav className="ml-auto flex items-center gap-2 sm:gap-3">
             <button
               onClick={() => setAuthAudience("team")}
-              className="hidden rounded-2xl border border-white/35 bg-white/6 px-5 py-3 text-sm font-extrabold transition hover:bg-white/10 sm:block"
+              className="rounded-2xl border border-white/35 bg-white/6 px-3 py-3 text-xs font-extrabold transition hover:bg-white/10 sm:px-5 sm:text-sm"
             >
-              Vendor / Team
+              <span className="sm:hidden">Vendor</span><span className="hidden sm:inline">Vendor / Team</span>
             </button>
             <button
               onClick={() => setAuthAudience("customer")}
-              className="rounded-2xl bg-[#5f8f2d] px-5 py-3 text-sm font-extrabold shadow-xl transition hover:bg-[#537e27]"
+              className="rounded-2xl bg-[#5f8f2d] px-3 py-3 text-xs font-extrabold shadow-xl transition hover:bg-[#537e27] sm:px-5 sm:text-sm"
             >
-              Customer login
+              <span className="sm:hidden">Customer</span><span className="hidden sm:inline">Customer login</span>
             </button>
           </nav>
         </header>
 
-        <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-10 px-5 pb-16 pt-8 sm:px-8 lg:grid-cols-[1.08fr_.92fr] lg:pb-24 lg:pt-14">
+        <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-8 px-4 pb-12 pt-5 sm:px-8 sm:pb-16 sm:pt-8 lg:grid-cols-[1.08fr_.92fr] lg:pb-24 lg:pt-14">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-bold backdrop-blur">
               <ShieldCheck className="size-4" /> Verified neighbourhood vendors
@@ -145,7 +145,7 @@ export function ShePlatesEntry({ onLogin }: { onLogin: (session: DemoSession) =>
           <div className="relative mx-auto w-full max-w-xl lg:ml-auto">
             <div className="absolute -inset-4 rotate-3 rounded-[44px] bg-[#5ba400]/35" />
             <div className="surface-card relative overflow-hidden rounded-[38px] border-8 border-white/10 bg-[#251b18] shadow-2xl">
-              <img src="/sheplates-hero.png" alt="Fresh vegetables, milk and homemade food" className="h-[390px] w-full object-cover sm:h-[500px]" />
+              <img src="/sheplates-hero.png" alt="Fresh vegetables, milk and homemade food" className="h-[300px] w-full object-cover sm:h-[500px]" />
               <div className="surface-card absolute inset-x-4 bottom-4 rounded-[24px] bg-white/95 p-4 text-[#171312] shadow-xl backdrop-blur">
                 <div className="flex items-center gap-3">
                   <div className="grid size-11 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><BadgeCheck /></div>
@@ -158,18 +158,18 @@ export function ShePlatesEntry({ onLogin }: { onLogin: (session: DemoSession) =>
         </div>
       </section>
 
-      <main className="mx-auto max-w-7xl px-5 py-14 sm:px-8 sm:py-20">
+      <main className="mx-auto max-w-7xl px-4 py-10 sm:px-8 sm:py-20">
         <section>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div><p className="text-sm font-black uppercase tracking-[.16em] text-[#5ba400]">Browse nearby</p><h2 className="mt-2 text-3xl font-black tracking-[-.04em] sm:text-4xl">What are you planning?</h2></div>
             <p className="max-w-xl text-base leading-7 text-stone-500">Choose a category now. Every order starts tomorrow or on a future date selected by you.</p>
           </div>
-          <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+          <div className="mt-7 flex snap-x gap-3 overflow-x-auto pb-2 hide-scrollbar sm:grid sm:grid-cols-4 lg:grid-cols-8">
             {categories.map((category) => (
               <button
                 key={category.name}
                 onClick={() => setSelectedCategory(selectedCategory === category.name ? "All" : category.name)}
-                className={`group rounded-[22px] border p-4 text-center transition hover:-translate-y-1 hover:shadow-lg ${selectedCategory === category.name ? "border-[#5ba400] ring-2 ring-lime-100" : "border-stone-100"}`}
+                className={`surface-card group min-w-[132px] snap-start rounded-[24px] p-4 text-center transition sm:min-w-0 hover:-translate-y-1 hover:shadow-lg ${selectedCategory === category.name ? "border-[#5ba400] ring-2 ring-lime-100" : "border-stone-100"}`}
               >
                 <div className="mx-auto grid aspect-square max-w-20 place-items-center rounded-[20px] text-4xl" style={{ background: category.color }}>{category.emoji}</div>
                 <div className="mt-3 text-sm font-extrabold leading-5">{category.name}</div>
@@ -214,10 +214,12 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [verificationStep, setVerificationStep] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
 
   useEffect(() => {
     if (!audience) return;
-    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); });
+    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); setVerificationStep(false); setVerificationCode(""); });
   }, [audience]);
 
   if (!audience) return null;
@@ -235,8 +237,14 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
           toast.success(registrationRole === "vendor" ? "Vendor account created. Complete verification next." : "Customer account created.");
           return;
         }
-        const result = await liveSignUp({ name: name.trim(), email, password, role: registrationRole });
-        if (!result.session) { setError("Account created, but sign-in did not start automatically. Please sign in with the account you just created."); setMode("login"); return; }
+        if (!verificationStep) {
+          await requestEmailVerificationCode({ name: name.trim(), email, role: registrationRole });
+          setVerificationStep(true);
+          toast.success("A 6-digit verification code was sent to your email.");
+          return;
+        }
+        if (!/^\d{6}$/.test(verificationCode.trim())) throw new Error("Enter the 6-digit code sent to your email.");
+        const result = await verifyEmailCodeAndSetPassword({ email, token: verificationCode.trim(), password });
         onLogin({ email, name: name.trim(), role: registrationRole, userId: result.user?.id, isNewVendor: registrationRole === "vendor" });
         return;
       }
@@ -268,7 +276,7 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 
   return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="max-h-[90vh] overflow-y-auto rounded-[32px] p-0 sm:max-w-lg"><div className="bg-gradient-to-r from-[#e55a41] via-[#ff845e] to-[#5f8f2d] p-6 text-white"><DialogHeader><DialogTitle className="text-2xl font-black">{audience === "customer" ? "Customer access" : "Vendor / Team access"}</DialogTitle><DialogDescription className="text-white/75">{audience === "customer" ? "Discover, request quotes and track scheduled orders." : "Vendors, operations and super admins use this secure entry."}</DialogDescription></DialogHeader></div><div className="p-6">
     {audience === "customer" && <div className="grid grid-cols-2 rounded-2xl bg-stone-100 p-1"><button onClick={() => setMode("login")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "login" ? "bg-white shadow-sm" : "text-stone-500"}`}>Sign in</button><button onClick={() => setMode("create")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "create" ? "bg-white shadow-sm" : "text-stone-500"}`}>Create account</button></div>}
-    <form onSubmit={submit} className="mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="entry-input" /></InputField>{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : audience === "customer" ? "Create customer account" : "Create vendor account"}<ArrowRight /></Button></form>
+    <form onSubmit={submit} className="mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="entry-input" /></InputField>{mode === "create" && verificationStep && <InputField label="Verification code"><input inputMode="numeric" maxLength={6} value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, ""))} className="entry-input tracking-[.35em] text-center text-lg font-black" placeholder="000000" /></InputField>}{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : verificationStep ? "Verify code & continue" : "Send verification code"}<ArrowRight /></Button></form>
     {audience === "team" && <button onClick={() => { setMode(mode === "login" ? "create" : "login"); setError(""); }} className="mt-4 w-full text-center text-sm text-stone-500">{mode === "login" ? <>Not a vendor? <span className="font-black text-[#ff4d18]">Be part of our vendor team</span></> : <>Already registered? <span className="font-black text-[#ff4d18]">Sign in</span></>}</button>}
   </div></DialogContent></Dialog>;
 }
@@ -276,7 +284,7 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 function AgentPreview({ open, close, login }: { open: boolean; close: () => void; login: () => void }) {
   const [message, setMessage] = useState("Plan milk every morning and chicken on Sunday under ₹800");
   if (!open) return null;
-  return <div className="fixed inset-0 z-[80] sm:pointer-events-none"><button onClick={close} className="absolute inset-0 bg-[#111611]/45 backdrop-blur-[2px] sm:pointer-events-auto" aria-label="Close She Agent preview" /><section className="surface-card pointer-events-auto absolute inset-x-0 bottom-0 overflow-hidden rounded-t-[34px] border border-white/60 bg-[#fbfcf8] shadow-[0_-20px_80px_rgba(17,22,17,.25)] sm:bottom-6 sm:right-6 sm:left-auto sm:w-[430px] sm:rounded-[34px] sm:shadow-[0_24px_90px_rgba(17,22,17,.3)]">
+  return <div className="fixed inset-0 z-[80] sm:pointer-events-none"><button onClick={close} className="absolute inset-0 bg-[#111611]/45 backdrop-blur-[2px] sm:pointer-events-auto" aria-label="Close She Agent preview" /><section className="surface-card pointer-events-auto absolute inset-x-0 bottom-0 overflow-hidden rounded-t-[30px] sm:rounded-[34px] border border-white/60 bg-[#fbfcf8] shadow-[0_-20px_80px_rgba(17,22,17,.25)] sm:bottom-6 sm:right-6 sm:left-auto sm:w-[430px] sm:rounded-[34px] sm:shadow-[0_24px_90px_rgba(17,22,17,.3)]">
     <div className="surface-dark relative overflow-hidden p-5 text-white"><div className="absolute -right-12 -top-16 size-44 rounded-full bg-[#6cab1b]/30 blur-3xl" /><div className="relative flex items-center gap-3"><div className="grid size-12 place-items-center rounded-2xl bg-gradient-to-br from-[#e55a41] via-[#ff845e] to-[#5f8f2d] shadow-lg"><Sparkles /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="text-lg font-black">She Agent</h2><span className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-white/70">Preview</span></div><p className="text-xs text-white/55">Your agentic local-commerce copilot</p></div><button onClick={close} className="grid size-10 place-items-center rounded-full bg-white/10"><X className="size-4" /></button></div></div>
     <div className="p-5"><div className="surface-card-muted rounded-[22px_22px_22px_8px] p-4 text-sm leading-6 text-stone-600 shadow-sm">Tell me a meal, budget or recurring need. I can shortlist nearby verified options, build a review basket and help you schedule it after sign-in.</div><div className="mt-3 grid grid-cols-3 gap-2">{[["🥛", "Daily milk"], ["🍱", "Meal plan"], ["🛍️", "Budget basket"]].map(([emoji,label]) => <button key={label} onClick={() => setMessage(label === "Daily milk" ? "Plan milk every morning" : label === "Meal plan" ? "Plan a healthy dinner under ₹400" : "Build groceries under ₹500")} className="surface-card-muted rounded-[22px] p-3 text-center shadow-sm"><div className="text-2xl">{emoji}</div><div className="mt-1 text-[10px] font-black">{label}</div></button>)}</div><div className="surface-card-muted mt-4 flex items-end gap-2 rounded-[22px] bg-[#f6f8f2] p-2"><textarea value={message} onChange={(event) => setMessage(event.target.value)} className="min-h-16 flex-1 resize-none bg-transparent px-2 py-1 text-sm outline-none" /><button onClick={login} className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#ef3d3d] text-white"><ArrowRight className="size-4" /></button></div><Button onClick={login} className="mt-3 h-12 w-full rounded-xl bg-[#111611] font-black text-white hover:bg-black"><Sparkles />Sign in and let She Agent build it</Button><p className="mt-3 text-center text-[10px] leading-4 text-stone-400">Your private profile, nearby catalogue, schedules and orders are only used after sign-in.</p></div>
   </section></div>;
@@ -284,4 +292,4 @@ function AgentPreview({ open, close, login }: { open: boolean; close: () => void
 
 function InputField({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block"><span className="mb-2 block text-xs font-black uppercase tracking-wider text-stone-500">{label}</span>{children}</label>; }
 
-function Brand({ dark = false }: { dark?: boolean }) { return <div className="flex items-center gap-3"><div className={`grid size-12 place-items-center rounded-2xl ${dark ? "surface-card-muted" : "bg-white/10 border border-white/10"}`}><img src="/sheplates-logo.png" alt="ShePlates" className="size-10 rounded-full object-contain" /></div><div><div className={`text-2xl font-black tracking-[-.05em] ${dark ? "text-[#171312]" : "text-white"}`}>ShePlates</div><div className={`text-[10px] font-black uppercase tracking-[.18em] ${dark ? "text-[#5f8f2d]" : "text-white/65"}`}>Agentic local commerce</div></div></div>; }
+function Brand({ dark = false }: { dark?: boolean }) { return <div className="flex min-w-0 items-center gap-2.5 sm:gap-3"><div className={`grid size-10 shrink-0 place-items-center rounded-[14px] sm:size-12 sm:rounded-2xl ${dark ? "surface-card-muted" : "border border-white/10 bg-white/10"}`}><img src="/sheplates-logo.png" alt="ShePlates" className="size-8 rounded-full object-contain sm:size-10" /></div><div className="min-w-0"><div className={`truncate text-xl font-black tracking-[-.05em] sm:text-2xl ${dark ? "text-[#171312]" : "text-white"}`}>ShePlates</div><div className={`hidden text-[9px] font-black uppercase tracking-[.18em] min-[390px]:block sm:text-[10px] ${dark ? "text-[#5f8f2d]" : "text-white/65"}`}>Agentic local commerce</div></div></div>; }
