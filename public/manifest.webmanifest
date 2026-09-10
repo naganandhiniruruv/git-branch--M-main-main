@@ -1,0 +1,13 @@
+{
+  "name": "ShePlates Agentic Hyperlocal Commerce",
+  "short_name": "ShePlates",
+  "description": "Scheduled local essentials, verified vendors and role-controlled She Agent workflows.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8f3",
+  "theme_color": "#111611",
+  "icons": [
+    { "src": "/sheplates-logo.png", "sizes": "1254x1254", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
