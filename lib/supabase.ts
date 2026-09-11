@@ -58,11 +58,18 @@ export async function liveSignIn(email: string, password: string) {
   const normalizedEmail = email.trim().toLowerCase();
   const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
   if (error) throw new Error(error.message || "The email or password could not be verified.");
-  const { data: profile, error: profileError } = await supabase
+  let { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("full_name, role, vendor_id")
+    .select("full_name, role, vendor_id, tours_completed")
     .eq("id", data.user.id)
     .single();
+  // tours_completed is added by the V7.4 migration. Fall back to a plain
+  // select so sign-in still works on a database that hasn't run it yet.
+  if (profileError && /tours_completed/i.test(profileError.message || "")) {
+    const fallback = await supabase.from("profiles").select("full_name, role, vendor_id").eq("id", data.user.id).single();
+    profile = fallback.data ? { ...fallback.data, tours_completed: [] } : null;
+    profileError = fallback.error;
+  }
   if (profileError) {
     throw new Error(
       profileError.code === "PGRST116"
@@ -70,7 +77,7 @@ export async function liveSignIn(email: string, password: string) {
         : profileError.message,
     );
   }
-  return { user: data.user, profile };
+  return { user: data.user, profile: profile as { full_name: string; role: string; vendor_id: string | null; tours_completed?: string[] } };
 }
 
 export async function liveSignUp(input: {
@@ -317,6 +324,14 @@ export async function markLiveNotificationsRead() {
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
   const result = await supabase.from("notifications").update({ read_at: new Date().toISOString() }).is("read_at", null);
   if (result.error) throw result.error;
+}
+
+export async function saveLiveTourCompleted(userId: string, toursCompleted: string[]) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return;
+  // Best-effort: a user should never be blocked from dismissing a tour just
+  // because the V7.4 migration (or a flaky connection) hasn't landed yet.
+  await supabase.from("profiles").update({ tours_completed: toursCompleted }).eq("id", userId);
 }
 
 export async function saveLiveCustomerProfile(input: {
