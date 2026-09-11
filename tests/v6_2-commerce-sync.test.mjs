@@ -1,0 +1,46 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+
+test("persists customer cart through the live commerce endpoint", async () => {
+  const route = await readFile(path.join(root, "app/api/commerce/route.ts"), "utf8");
+  const client = await readFile(path.join(root, "lib/supabase.ts"), "utf8");
+  assert.match(route, /action === "sync_cart"/);
+  assert.match(route, /commerce_cart_items/);
+  assert.match(route, /serviceableProductsForCustomer/);
+  assert.match(client, /syncLiveCart/);
+});
+
+test("converts the saved cart into real pending orders before payment", async () => {
+  const route = await readFile(path.join(root, "app/api/commerce/route.ts"), "utf8");
+  const ui = await readFile(path.join(root, "components/sheplates-v3.tsx"), "utf8");
+  assert.match(route, /action === "checkout_cart"/);
+  assert.match(route, /status: "converted"/);
+  assert.match(route, /from\("orders"\)\.insert/);
+  assert.match(route, /from\("payments"\)\.insert/);
+  assert.match(ui, /checkoutLiveCart/);
+});
+
+test("restores cart, previous orders and paid schedule state from live data", async () => {
+  const ui = await readFile(path.join(root, "components/sheplates-v3.tsx"), "utf8");
+  const route = await readFile(path.join(root, "app/api/commerce/route.ts"), "utf8");
+  assert.match(route, /cartItems/);
+  assert.match(ui, /snapshot\.cartItems/);
+  assert.match(ui, /statuses\.some\(\(status\).*paid/si);
+  assert.match(ui, /progressed.*confirmed.*completed/si);
+  assert.match(ui, /paidDeliveries/);
+});
+
+test("She Agent sees real order item names and uses the same saved cart", async () => {
+  const agent = await readFile(path.join(root, "app/api/agent/route.ts"), "utf8");
+  const runtime = await readFile(path.join(root, "lib/she-agent-commerce-runtime.ts"), "utf8");
+  assert.match(agent, /order_items\(product_name,quantity,unit,customer_price\)/);
+  assert.match(agent, /commerce_cart_items/);
+  assert.match(runtime, /get_current_cart/);
+  assert.match(runtime, /basketProductIds means the app should persist/);
+  assert.match(runtime, /get_order_history for previous\/recent purchases/);
+});
