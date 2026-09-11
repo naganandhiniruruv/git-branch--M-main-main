@@ -11,6 +11,7 @@
     "build": "bash scripts/build-verified.sh",
     "start": "vinext start",
     "test": "npm run build && node --test tests/*.test.mjs",
+    "test:e2e": "playwright test",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "supabase:create-users": "node --env-file=.env.local scripts/create-supabase-users.mjs",
     "supabase:create-staff-users": "node --env-file=.env.local scripts/create-supabase-staff-users.mjs",
@@ -47,6 +48,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
