@@ -444,7 +444,13 @@ export function ShePlatesV3() {
     if (!hydrated || !session) return;
     const key = session.role === "customer" ? CUSTOMER_TOUR_KEY : session.role === "vendor" ? VENDOR_TOUR_KEY : null;
     if (!key || (session.toursCompleted || []).includes(key)) return;
-    const timer = window.setTimeout(() => setTourOpen(session.role === "customer" ? "customer" : "vendor"), 900);
+    const timer = window.setTimeout(() => {
+      // The vendor tour's targets live in the staff sidebar, which on a
+      // narrow viewport is a closed hamburger drawer by default — open it
+      // so the spotlighted nav items are actually visible.
+      if (session.role === "vendor") setMenuOpen(true);
+      setTourOpen(session.role === "customer" ? "customer" : "vendor");
+    }, 900);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, session?.email, session?.role]);
@@ -581,7 +587,11 @@ export function ShePlatesV3() {
     });
     if (skipped) toast("Tour skipped — replay it anytime from Help", { duration: 4000 });
   }
-  function replayTour() { if (session?.role === "customer" || session?.role === "vendor") setTourOpen(session.role); }
+  function replayTour() {
+    if (session?.role !== "customer" && session?.role !== "vendor") return;
+    if (session.role === "vendor") setMenuOpen(true);
+    setTourOpen(session.role);
+  }
   if (!session) return <ShePlatesEntry onLogin={(next) => { setSession(next); setActive(nav[next.role][0]); }} />;
   const role = session.role;
   const customer = state.customers.find((item) => item.email === session.email);
@@ -677,7 +687,7 @@ export function ShePlatesV3() {
         <div className="mb-3 flex items-center justify-between lg:hidden"><div className="flex items-center gap-2"><img src="/sheplates-logo.png" alt="" className="size-9 rounded-xl bg-white p-1" /><div><div className="text-sm font-black">ShePlates</div><div className="text-[10px] uppercase tracking-wider text-white/45">{roleName[role]}</div></div></div><button onClick={() => setMenuOpen(false)} className="grid size-10 place-items-center rounded-full bg-white/10"><X className="size-4" /></button></div>
         <button onClick={() => setSidebarCollapsed((value) => !value)} className="mb-3 hidden items-center justify-center rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-black text-white/65 hover:bg-white/10 lg:flex">{sidebarCollapsed ? "→" : "← Collapse"}</button>
         <nav className="space-y-1.5">{nav[role].map((label) => { const Icon = navIcons[label] || Store; return <button key={label} data-tour-nav={label} title={sidebarCollapsed ? label : undefined} onClick={() => { setActive(label); setMenuOpen(false); }} className={`nav-item flex w-full items-center ${sidebarCollapsed ? "justify-center px-3" : "gap-3 px-4"} rounded-2xl py-3.5 text-left text-sm font-bold transition ${active === label ? "nav-item-active" : ""}`}><Icon className="size-[18px] shrink-0" />{!sidebarCollapsed && label}</button>; })}</nav>
-        {role === "vendor" && <button onClick={() => { replayTour(); setMenuOpen(false); }} className={`nav-item mt-1.5 flex w-full items-center ${sidebarCollapsed ? "justify-center px-3" : "gap-3 px-4"} rounded-2xl py-3.5 text-left text-sm font-bold`} title={sidebarCollapsed ? "Help" : undefined}><HelpCircle className="size-[18px] shrink-0" />{!sidebarCollapsed && "Help · Product tour"}</button>}
+        {role === "vendor" && <button onClick={replayTour} className={`nav-item mt-1.5 flex w-full items-center ${sidebarCollapsed ? "justify-center px-3" : "gap-3 px-4"} rounded-2xl py-3.5 text-left text-sm font-bold`} title={sidebarCollapsed ? "Help" : undefined}><HelpCircle className="size-[18px] shrink-0" />{!sidebarCollapsed && "Help · Product tour"}</button>}
       </aside>
       <main className="sp-portal-main min-w-0 flex-1 p-4 pb-28 sm:p-6 lg:p-8 lg:pl-0">
         {isLiveSupabaseMode() && liveSync === "loading" && <div className="surface-card mb-4 flex items-center gap-3 rounded-2xl border border-sky-200/70 bg-sky-50/90 p-3 text-sm text-sky-900"><RefreshCcw className="size-4 animate-spin" /><span className="flex-1 font-bold">Refreshing your latest data…</span></div>}

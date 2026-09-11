@@ -22,8 +22,10 @@ test.describe("Customer product tour", () => {
     await page.reload();
     await expect(page.getByText(/Step \d of 10/)).not.toBeVisible({ timeout: 5000 });
 
-    // Replay from the account menu.
-    await page.getByText("Account & preferences").click();
+    // Replay from the account menu — the desktop header dropdown trigger or
+    // the mobile bottom-nav "Account" button, whichever is actually visible.
+    const accountTrigger = page.locator('[data-tour="account"]:visible, [data-tour="account-mobile"]:visible').first();
+    await accountTrigger.click();
     await page.getByRole("button", { name: /Help.*Product tour/ }).click();
     await expect(page.getByText("Step 1 of 10")).toBeVisible();
     await page.getByRole("button", { name: "Skip" }).click();

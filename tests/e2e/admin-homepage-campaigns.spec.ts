@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { loginAsStaff, dismissTourIfOpen } from "./helpers";
+import { loginAsStaff, dismissTourIfOpen, openStaffNavIfCollapsed } from "./helpers";
 
 test.describe("Super Admin — Homepage & Campaigns", () => {
   test("never shows a false 'saved' state while the underlying tables are unreachable", async ({ page }) => {
@@ -11,6 +11,7 @@ test.describe("Super Admin — Homepage & Campaigns", () => {
     // banner + error toast — never silently pretend to succeed.
     await loginAsStaff(page, "admin");
     await dismissTourIfOpen(page);
+    await openStaffNavIfCollapsed(page);
     await page.getByRole("button", { name: "Homepage & campaigns" }).click();
     await expect(page.getByRole("heading", { name: "Homepage & campaigns" })).toBeVisible({ timeout: 10_000 });
 

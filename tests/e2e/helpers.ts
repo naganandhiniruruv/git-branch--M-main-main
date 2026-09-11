@@ -14,7 +14,9 @@ export async function loginAsCustomer(page: Page) {
   await page.goto("/");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/");
-  await page.getByRole("button", { name: "Customer login" }).click();
+  // The header shows "Customer login" on desktop and just "Sign in" on
+  // mobile (sm:hidden / hidden sm:inline), so match either.
+  await page.getByRole("button", { name: /Customer login|^Sign in$/ }).click();
   await page.getByLabel("Email").fill(DEMO.customer.email);
   await page.getByLabel("Password").fill(DEMO.customer.password);
   await page.locator("form").getByRole("button", { name: "Sign in" }).click();
@@ -25,11 +27,22 @@ export async function loginAsStaff(page: Page, who: "vendor" | "operations" | "a
   await page.goto("/");
   await page.evaluate(() => localStorage.clear());
   await page.goto("/");
-  await page.getByRole("button", { name: "Vendor / Team" }).click();
+  // "Vendor / Team" on desktop, just "Vendor" on mobile.
+  await page.getByRole("button", { name: /Vendor/ }).click();
   await page.getByLabel("Email").fill(DEMO[who].email);
   await page.getByLabel("Password").fill(DEMO[who].password);
   await page.locator("form").getByRole("button", { name: "Sign in" }).click();
   await page.waitForSelector('text=Loading your ShePlates profile', { state: "hidden", timeout: 15_000 }).catch(() => {});
+}
+
+/** Opens the staff sidebar drawer if it's currently a closed hamburger menu
+ * (narrow viewports only — on desktop the sidebar is always visible and this
+ * button is a harmless no-op toggle). */
+export async function openStaffNavIfCollapsed(page: Page) {
+  const toggle = page.getByRole("button", { name: "Toggle navigation" });
+  if (await toggle.isVisible().catch(() => false)) {
+    await toggle.click();
+  }
 }
 
 /** Dismisses the product tour if it auto-opened (it fires ~900ms after

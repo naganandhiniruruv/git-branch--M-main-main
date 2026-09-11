@@ -6,7 +6,7 @@ test.describe("Authentication", () => {
     await page.goto("/");
     await page.evaluate(() => localStorage.clear());
     await page.goto("/");
-    await page.getByRole("button", { name: "Customer login" }).click();
+    await page.getByRole("button", { name: /Customer login|^Sign in$/ }).click();
     await expect(page.getByText("Customer access")).toBeVisible();
     await page.getByLabel("Email").fill(DEMO.customer.email);
     await page.getByLabel("Password").fill(DEMO.customer.password);
@@ -22,7 +22,7 @@ test.describe("Authentication", () => {
     await page.goto("/");
     await page.evaluate(() => localStorage.clear());
     await page.goto("/");
-    await page.getByRole("button", { name: "Customer login" }).click();
+    await page.getByRole("button", { name: /Customer login|^Sign in$/ }).click();
     await page.getByLabel("Email").fill(DEMO.customer.email);
     await page.getByLabel("Password").fill("WrongPassword123");
     await page.locator("form").getByRole("button", { name: "Sign in" }).click();
