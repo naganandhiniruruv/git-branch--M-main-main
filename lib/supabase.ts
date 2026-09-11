@@ -89,26 +89,23 @@ export async function liveSignUp(input: {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
 
-  if (process.env.NEXT_PUBLIC_TEST_AUTO_CONFIRM === "true") {
-    const response = await fetch("/api/test-auth/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-    const result = await response.json() as { error?: string };
-    if (!response.ok) throw new Error(result.error || "Unable to create the local test account.");
-    const signedIn = await supabase.auth.signInWithPassword({ email: input.email, password: input.password });
-    if (signedIn.error) throw signedIn.error;
-    return signedIn.data;
-  }
-
-  const { data, error } = await supabase.auth.signUp({
-    email: input.email,
-    password: input.password,
-    options: { data: { full_name: input.name, role: input.role } },
+  // Temporary UAT flow: customer/vendor self-signup is created as confirmed by
+  // the server route so no verification email/OTP is required. Authentication
+  // is still enforced with email + password on every future sign-in.
+  const response = await fetch("/api/auth/direct-signup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
   });
-  if (error) throw error;
-  return data;
+  const result = await response.json() as { userId?: string; error?: string };
+  if (!response.ok || !result.userId) throw new Error(result.error || "Unable to create the account.");
+
+  const signedIn = await supabase.auth.signInWithPassword({
+    email: input.email.trim().toLowerCase(),
+    password: input.password,
+  });
+  if (signedIn.error || !signedIn.data.user) throw signedIn.error || new Error("Account created, but sign-in failed.");
+  return signedIn.data;
 }
 
 export async function liveSignOut() {

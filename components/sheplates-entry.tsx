@@ -14,7 +14,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Toaster } from "@/components/ui/sonner";
 import { categories, plans, vendors } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
-import { isSupabaseConfigured, liveSignIn, requestEmailVerificationCode, verifyEmailCodeAndSetPassword } from "@/lib/supabase";
+import { isSupabaseConfigured, liveSignIn, liveSignUp } from "@/lib/supabase";
 
 type Audience = "customer" | "team";
 type AuthMode = "login" | "create";
@@ -191,8 +191,6 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [verificationStep, setVerificationStep] = useState(false);
-  const [verificationCode, setVerificationCode] = useState("");
 
   function revealField(event: React.FocusEvent<HTMLInputElement>) {
     const element = event.currentTarget;
@@ -201,7 +199,7 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 
   useEffect(() => {
     if (!audience) return;
-    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); setVerificationStep(false); setVerificationCode(""); });
+    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); });
   }, [audience]);
 
   if (!audience) return null;
@@ -219,15 +217,9 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
           toast.success(registrationRole === "vendor" ? "Vendor account created. Complete verification next." : "Customer account created.");
           return;
         }
-        if (!verificationStep) {
-          await requestEmailVerificationCode({ name: name.trim(), email, role: registrationRole });
-          setVerificationStep(true);
-          toast.success("A 6-digit verification code was sent to your email.");
-          return;
-        }
-        if (!/^\d{6}$/.test(verificationCode.trim())) throw new Error("Enter the 6-digit code sent to your email.");
-        const result = await verifyEmailCodeAndSetPassword({ email, token: verificationCode.trim(), password });
+        const result = await liveSignUp({ name: name.trim(), email, password, role: registrationRole });
         onLogin({ email, name: name.trim(), role: registrationRole, userId: result.user?.id, isNewVendor: registrationRole === "vendor" });
+        toast.success(registrationRole === "vendor" ? "Vendor account created. Complete onboarding next." : "Customer account created.");
         return;
       }
 
@@ -258,7 +250,7 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 
   return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="sp-auth-dialog max-h-[90vh] overflow-y-auto rounded-[32px] p-0 sm:max-w-lg"><div className="sp-auth-hero bg-gradient-to-r from-[#e55a41] via-[#ff845e] to-[#5f8f2d] p-6 text-white"><DialogHeader><DialogTitle className="text-2xl font-black">{audience === "customer" ? "Customer access" : "Vendor / Team access"}</DialogTitle><DialogDescription className="text-white/75">{audience === "customer" ? "Discover, request quotes and track scheduled orders." : "Vendors, operations and super admins use this secure entry."}</DialogDescription></DialogHeader></div><div className="p-6">
     {audience === "customer" && <div className="grid grid-cols-2 rounded-2xl bg-stone-100 p-1"><button onClick={() => setMode("login")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "login" ? "bg-white shadow-sm" : "text-stone-500"}`}>Sign in</button><button onClick={() => setMode("create")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "create" ? "bg-white shadow-sm" : "text-stone-500"}`}>Create account</button></div>}
-    <form onSubmit={submit} className="sp-auth-form mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} onFocus={revealField} autoComplete="name" className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} onFocus={revealField} autoComplete="email" inputMode="email" className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onFocus={revealField} autoComplete={mode === "create" ? "new-password" : "current-password"} className="entry-input" /></InputField>{mode === "create" && verificationStep && <InputField label="Verification code"><input inputMode="numeric" maxLength={6} value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, ""))} onFocus={revealField} autoComplete="one-time-code" className="entry-input tracking-[.35em] text-center text-lg font-black" placeholder="000000" /></InputField>}{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : verificationStep ? "Verify code & continue" : "Send verification code"}<ArrowRight /></Button></form>
+    <form onSubmit={submit} className="sp-auth-form mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} onFocus={revealField} autoComplete="name" className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} onFocus={revealField} autoComplete="email" inputMode="email" className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onFocus={revealField} autoComplete={mode === "create" ? "new-password" : "current-password"} className="entry-input" /></InputField>{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<ArrowRight /></Button></form>
     {audience === "team" && <button onClick={() => { setMode(mode === "login" ? "create" : "login"); setError(""); }} className="mt-4 w-full text-center text-sm text-stone-500">{mode === "login" ? <>Not a vendor? <span className="font-black text-[#ff4d18]">Be part of our vendor team</span></> : <>Already registered? <span className="font-black text-[#ff4d18]">Sign in</span></>}</button>}
   </div></DialogContent></Dialog>;
 }
