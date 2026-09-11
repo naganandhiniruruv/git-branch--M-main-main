@@ -81,6 +81,7 @@ function compactProduct(row: Record<string, unknown>) {
     carbs_g: number(row.carbs_g ?? row.carbs, 0),
     fat_g: number(row.fat_g ?? row.fat, 0),
     fibre_g: number(row.fibre_g ?? row.fibre, 0),
+    nutrition_available: productCalories(row) > 0 && text(row.nutrition_status).toLowerCase() !== "pending_review",
     dietary_tags: productDietaryTags(row),
     distance_km: productDistance(row),
     delivery_enabled: Boolean(row.delivery_enabled ?? row.delivery),
@@ -205,7 +206,7 @@ function filterSearch(products: Record<string, unknown>[], args: Record<string, 
     if (category && !compact.category.toLowerCase().includes(category)) return false;
     if (vendor && !compact.vendor_name.toLowerCase().includes(vendor)) return false;
     if (maxPrice >= 0 && compact.price > maxPrice) return false;
-    if (maxCalories >= 0 && compact.calories > maxCalories) return false;
+    if (maxCalories >= 0 && (!compact.nutrition_available || compact.calories > maxCalories)) return false;
     if (minProtein >= 0 && compact.protein_g < minProtein) return false;
     if (maxDistance >= 0 && compact.distance_km > maxDistance) return false;
     if (tags.length && !tags.every((tag) => haystack.includes(tag))) return false;
@@ -213,7 +214,7 @@ function filterSearch(products: Record<string, unknown>[], args: Record<string, 
   });
   scored.sort((a, b) => {
     if (sortBy === "price_low") return a.compact.price - b.compact.price;
-    if (sortBy === "calories_low") return a.compact.calories - b.compact.calories;
+    if (sortBy === "calories_low") return (a.compact.nutrition_available ? a.compact.calories : Number.POSITIVE_INFINITY) - (b.compact.nutrition_available ? b.compact.calories : Number.POSITIVE_INFINITY);
     if (sortBy === "protein_high") return b.compact.protein_g - a.compact.protein_g;
     if (sortBy === "distance_low") return a.compact.distance_km - b.compact.distance_km;
     return b.score - a.score || a.compact.distance_km - b.compact.distance_km || a.compact.price - b.compact.price;
@@ -229,7 +230,15 @@ function executeTool(role: Role, context: Record<string, unknown>, name: string,
       return { count: items.length, items, source: "current_serviceable_marketplace" };
     }
     if (name === "get_customer_context") return { preferences: context.preferences || null, remembered_preferences: context.memory || [] };
-    if (name === "get_current_cart") return { items: context.cartItems || [] };
+    if (name === "get_current_cart") {
+      const productMap = new Map(products.map((row) => [productId(row), compactProduct(row)]).filter(([id]) => Boolean(id)));
+      const items = asObjects(context.cartItems).map((row) => ({
+        ...row,
+        product: productMap.get(text(row.menu_item_id)) || null,
+        line_total: Math.round(number(row.unit_price, 0) * number(row.quantity, 1) * 100) / 100,
+      }));
+      return { items, total: Math.round(items.reduce((sum, item) => sum + number(item.line_total, 0), 0) * 100) / 100 };
+    }
     if (name === "build_cart") {
       const allowed = new Map(products.map((row) => [productId(row), row]).filter(([id]) => Boolean(id)));
       const requested = Array.isArray(args.items) ? args.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
@@ -244,10 +253,17 @@ function executeTool(role: Role, context: Record<string, unknown>, name: string,
       total = Math.round(total * 100) / 100;
       return { items, total, currency: "INR", within_budget: budget < 0 || total <= budget + 0.001, budget: budget < 0 ? null : budget, requires_customer_confirmation: true };
     }
-    if (name === "get_order_history") return { orders: asObjects(context.orders).slice(0, Math.max(1, Math.min(20, Math.floor(number(args.limit, 10))))) };
+    if (name === "get_order_history") {
+      const limit = Math.max(1, Math.min(20, Math.floor(number(args.limit, 10))));
+      const orders = [...asObjects(context.orders)].sort((a, b) => text(b.created_at).localeCompare(text(a.created_at)));
+      return { orders: orders.slice(0, limit) };
+    }
     if (name === "get_order_status") {
       const ref = text(args.order_reference).toLowerCase(); const orders = asObjects(context.orders);
-      const order = orders.find((row) => text(row.id).toLowerCase() === ref || text(row.order_number).toLowerCase() === ref) || (ref === "next" ? orders[0] : undefined);
+      const today = new Date().toISOString().slice(0, 10);
+      const nextOrder = [...orders].filter((row) => text(row.scheduled_date) >= today && !["cancelled", "completed"].includes(text(row.status).toLowerCase())).sort((a, b) => text(a.scheduled_date).localeCompare(text(b.scheduled_date)))[0];
+      const latestOrder = [...orders].sort((a, b) => text(b.created_at).localeCompare(text(a.created_at)))[0];
+      const order = orders.find((row) => text(row.id).toLowerCase() === ref || text(row.order_number).toLowerCase() === ref) || (ref === "next" ? nextOrder : undefined) || (["latest", "last", "recent"].includes(ref) ? latestOrder : undefined);
       return order ? { order } : { error: "No matching order exists in this customer account." };
     }
     if (name === "get_schedules") return { schedules: context.schedules || [] };
@@ -359,7 +375,7 @@ async function callResponses(apiKey: string, payload: Record<string, unknown>) {
 
 function instructionsForRole(role: Role) {
   const shared = `You are She Agent, ShePlates' natural agentic-commerce assistant. Understand normal human language semantically; never require command phrases. You achieve commerce outcomes by using the available business tools whenever current ShePlates facts are needed. Never invent a product, price, vendor, availability, nutrition value, order, schedule, quotation, payment state or business fact. Do not answer a current-data question from memory when a relevant business tool can verify it. Keep responses concise, natural and useful. Do not mention internal implementation, databases, APIs, model providers, tool protocols or developer configuration. Consequential actions remain human-confirmed.`;
-  if (role === "customer") return `${shared} You are scoped to this signed-in customer only. For product discovery, use search_catalogue. For a multi-item recommendation, normally search first and then validate the proposed basket with build_cart. Use get_customer_context for personalization when useful, not as a substitute for live catalogue search. Use order/schedule/quotation tools for those questions. If the user says 'near me', 'available', 'low calorie', 'under a budget', 'healthy', 'something for me', or any equivalent natural wording, infer the constraints and call the appropriate tools rather than asking the user to reformulate. Use exact item IDs returned by tools in selectedProductIds/basketProductIds. Never reveal another customer's data. memoryUpdates may contain only stable, non-sensitive shopping preferences that the customer explicitly states or repeatedly confirms.`;
+  if (role === "customer") return `${shared} You are scoped to this signed-in customer only. For product discovery, use search_catalogue. For a multi-item recommendation, normally search first and then validate the proposed basket with build_cart. Use get_current_cart before answering basket/cart questions. When the customer naturally asks you to add, order, buy, keep, put, or remove products, use the catalogue/cart tools as needed and return the exact live product IDs in basketProductIds/removeProductIds; basketProductIds means the app should persist those items into the customer's saved cart, and navigateTo should normally be Cart when the customer wants to review or checkout. Do not claim that something was added unless the IDs are returned for the app to persist. Use get_customer_context for personalization when useful, not as a substitute for live catalogue search. Use get_order_history for previous/recent purchases and get_order_status for a specific/next/latest order; never invent past food names. Use get_schedules and get_quotations for those questions. If the user says 'near me', 'available', 'low calorie', 'under a budget', 'healthy', 'something for me', or any equivalent natural wording, infer the constraints and call the appropriate tools rather than asking the user to reformulate. Never treat missing nutrition as zero calories or zero protein; nutrition_available=false means nutrition is pending and must not be ranked as a low-calorie or high-protein choice. Use exact item IDs returned by tools in selectedProductIds/basketProductIds. Never reveal another customer's data. memoryUpdates may contain only stable, non-sensitive shopping preferences that the customer explicitly states or repeatedly confirms.`;
   if (role === "vendor") return `${shared} You are scoped to this signed-in vendor only. Use vendor tools to answer about this store, its catalogue, stock, own orders, RFQs, staff and payouts. Never reveal another vendor's private records.`;
   if (role === "operations") return `${shared} You are scoped to authorised operational records. You may analyse cross-platform operational data through Operations tools, but do not claim Super Admin governance access.`;
   return `${shared} You are scoped to authorised Super Admin records. You may use operational and governance tools to analyse the platform, while leaving consequential actions for explicit human confirmation.`;

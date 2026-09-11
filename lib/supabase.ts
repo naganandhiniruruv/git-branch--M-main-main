@@ -37,6 +37,7 @@ export type LiveMenuItemRow = {
   quantity_step: number; stock_quantity: number; vendor_base_price: number; active: boolean;
   calories_per_unit: number; protein_g: number; carbs_g: number; fat_g: number; fibre_g: number;
   dietary_tags: string[]; pack_amount: number | null; pack_measure: string | null; image_url: string | null;
+  nutrition_status?: string | null; nutrition_confidence?: number | null; nutrition_note?: string | null;
 };
 
 export function getSupabaseBrowserClient() {
@@ -173,11 +174,13 @@ export async function loadLiveMarketplace(latitude: number, longitude: number) {
 export async function loadLiveVendorWorkspace(vendorId: string) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const [vendor, products, documents] = await Promise.all([
-    supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id").eq("id", vendorId).single(),
-    supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url").eq("vendor_id", vendorId).order("created_at", { ascending: false }),
-    supabase.from("vendor_documents").select("document_number,storage_path,expiry_date,verification_status").eq("vendor_id", vendorId).order("created_at", { ascending: false }).limit(1),
-  ]);
+  const vendorPromise = supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id").eq("id", vendorId).single();
+  const documentsPromise = supabase.from("vendor_documents").select("document_number,storage_path,expiry_date,verification_status").eq("vendor_id", vendorId).order("created_at", { ascending: false }).limit(1);
+  let products = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url,nutrition_status,nutrition_confidence,nutrition_note").eq("vendor_id", vendorId).order("created_at", { ascending: false });
+  if (products.error && /nutrition_status|nutrition_confidence|nutrition_note/i.test(products.error.message || "")) {
+    products = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url").eq("vendor_id", vendorId).order("created_at", { ascending: false });
+  }
+  const [vendor, documents] = await Promise.all([vendorPromise, documentsPromise]);
   if (vendor.error) throw vendor.error;
   if (products.error) throw products.error;
   if (documents.error) throw documents.error;
@@ -232,18 +235,33 @@ export async function saveLiveVendorProduct(input: {
   vendorId: string; name: string; category: string; unit: string; price: number; stock: number;
   active: boolean; calories: number; protein: number; carbs: number; fat: number; fibre: number;
   dietaryTags: string[]; packAmount: number; packMeasure: string; imageUrl?: string;
+  nutritionStatus?: "verified" | "estimated" | "pending_review"; nutritionConfidence?: number; nutritionNote?: string;
 }) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const result = await supabase.from("vendor_menu_items").insert({
+  const payload = {
     vendor_id: input.vendorId, name: input.name, category: input.category, unit: input.unit,
     quantity_step: 1, vendor_base_price: input.price, stock_quantity: input.stock, active: input.active,
     calories_per_unit: input.calories, protein_g: input.protein, carbs_g: input.carbs,
     fat_g: input.fat, fibre_g: input.fibre, dietary_tags: input.dietaryTags,
     pack_amount: input.packAmount, pack_measure: input.packMeasure, image_url: input.imageUrl || null,
-  }).select("id").single();
+    nutrition_status: input.nutritionStatus || "pending_review",
+    nutrition_confidence: input.nutritionConfidence ?? null,
+    nutrition_note: input.nutritionNote || null,
+  };
+  let result = await supabase.from("vendor_menu_items").insert(payload).select("id").single();
+  // Backward-compatible retry lets the UI keep working if the production migration
+  // has not been applied yet; the release notes still require the migration.
+  if (result.error && /nutrition_status|nutrition_confidence|nutrition_note/i.test(result.error.message || "")) {
+    const { nutrition_status: _status, nutrition_confidence: _confidence, nutrition_note: _note, ...legacyPayload } = payload;
+    result = await supabase.from("vendor_menu_items").insert(legacyPayload).select("id").single();
+  }
   if (result.error) throw result.error;
   return result.data.id as string;
+}
+
+export async function notifyLiveNutritionReview(input: { productId: string; productName: string; reason: string }) {
+  return commerceRequest({ action: "notify_nutrition_review", ...input });
 }
 
 export async function setLiveProductActive(productId: string, active: boolean) {
@@ -400,6 +418,8 @@ export type LiveCommerceSnapshot = {
   schedules: Array<Record<string, unknown>>;
   staff: Array<Record<string, unknown>>;
   assignments: Array<Record<string, unknown>>;
+  cart?: Record<string, unknown> | null;
+  cartItems?: Array<Record<string, unknown>>;
 };
 
 async function commerceRequest(body?: Record<string, unknown>) {
@@ -423,6 +443,14 @@ export async function createLiveScheduledCheckout(input: {
   quantity: number; unit: string; mode: string; customerPrice: number; perDeliveryTotal: number; total: number; whatsappReminder?: boolean;
 }) {
   return commerceRequest({ action: "create_schedule", ...input });
+}
+
+export async function syncLiveCart(input: { items: Array<{ productId: string; quantity: number }>; createdBy?: "customer" | "she_agent" }) {
+  return commerceRequest({ action: "sync_cart", items: input.items, createdBy: input.createdBy || "customer" });
+}
+
+export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string }) {
+  return commerceRequest({ action: "checkout_cart", ...(input || {}) });
 }
 
 export async function markLiveOrderPaid(input: { orderId: string; method: string; reference?: string }) {

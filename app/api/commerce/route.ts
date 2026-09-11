@@ -56,6 +56,26 @@ function scheduleDates(schedule: { start_date: string; end_date?: string | null;
   return out.length ? out : [start];
 }
 
+async function serviceableProductsForCustomer(admin: ReturnType<typeof createClient>, customerId: string) {
+  const { data: preference } = await admin.from("customer_preferences").select("latitude,longitude").eq("customer_id", customerId).maybeSingle();
+  const latitude = Number(preference?.latitude);
+  const longitude = Number(preference?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return new Map<string, Record<string, unknown>>();
+  const marketplace = await admin.rpc("marketplace_menu_nearby", { customer_lat: latitude, customer_lng: longitude });
+  if (marketplace.error) throw marketplace.error;
+  const rows = (marketplace.data || []) as Array<Record<string, unknown>>;
+  return new Map(rows.map((row) => [String(row.item_id || ""), row]).filter(([id]) => Boolean(id)));
+}
+
+async function draftCartForCustomer(admin: ReturnType<typeof createClient>, customerId: string) {
+  const cart = await admin.from("commerce_carts").select("id,status,created_by,created_at,updated_at").eq("customer_id", customerId).eq("status", "draft").order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  if (cart.error) throw cart.error;
+  if (!cart.data) return { cart: null, items: [] as Array<Record<string, unknown>> };
+  const items = await admin.from("commerce_cart_items").select("id,cart_id,menu_item_id,vendor_id,quantity,unit,unit_price,created_at").eq("cart_id", cart.data.id).order("created_at", { ascending: true });
+  if (items.error) throw items.error;
+  return { cart: cart.data as Record<string, unknown>, items: (items.data || []) as Array<Record<string, unknown>> };
+}
+
 async function commerceSnapshot(ctx: Awaited<ReturnType<typeof identity>>) {
   if (!ctx) throw new Error("Unauthorised");
   const { admin, profile } = ctx;
@@ -93,7 +113,14 @@ async function commerceSnapshot(ctx: Awaited<ReturnType<typeof identity>>) {
     if (!staffResult.error) staff = staffResult.data || [];
     if (!assignmentResult.error) assignments = assignmentResult.data || [];
   }
-  return { orders: orders.data || [], schedules: schedules.data || [], staff, assignments };
+  let cart: Record<string, unknown> | null = null;
+  let cartItems: Array<Record<string, unknown>> = [];
+  if (role === "customer") {
+    const draft = await draftCartForCustomer(admin, profile.id);
+    cart = draft.cart;
+    cartItems = draft.items;
+  }
+  return { orders: orders.data || [], schedules: schedules.data || [], staff, assignments, cart, cartItems };
 }
 
 export async function GET(request: Request) {
@@ -113,6 +140,83 @@ export async function POST(request: Request) {
   const action = String(body.action || "");
   const { admin, profile } = ctx;
   try {
+    if (action === "sync_cart") {
+      if (profile.role !== "customer") return NextResponse.json({ error: "Customer access required." }, { status: 403 });
+      const requested = Array.isArray(body.items) ? body.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
+      const allowed = await serviceableProductsForCustomer(admin, profile.id);
+      const normalized: Array<{ productId: string; vendorId: string; quantity: number; unit: string; unitPrice: number }> = [];
+      for (const item of requested.slice(0, 100)) {
+        const productId = String(item.productId || item.menuItemId || "");
+        const row = allowed.get(productId);
+        if (!row) continue;
+        const quantity = Math.max(0.001, Number(item.quantity || 1));
+        const stock = Number(row.stock_quantity || 0);
+        if (!Number.isFinite(quantity) || quantity <= 0 || stock <= 0) continue;
+        normalized.push({ productId, vendorId: String(row.vendor_id), quantity: Math.min(quantity, stock), unit: String(row.unit || "pack"), unitPrice: Math.max(0, Number(row.customer_price || 0)) });
+      }
+      let draft = await draftCartForCustomer(admin, profile.id);
+      let cartId = draft.cart?.id ? String(draft.cart.id) : "";
+      if (!cartId) {
+        const created = await admin.from("commerce_carts").insert({ customer_id: profile.id, status: "draft", created_by: String(body.createdBy || "customer") === "she_agent" ? "she_agent" : "customer" }).select("id").single();
+        if (created.error) throw created.error;
+        cartId = created.data.id;
+      }
+      const removed = await admin.from("commerce_cart_items").delete().eq("cart_id", cartId);
+      if (removed.error) throw removed.error;
+      if (normalized.length) {
+        const added = await admin.from("commerce_cart_items").insert(normalized.map((item) => ({ cart_id: cartId, menu_item_id: item.productId, vendor_id: item.vendorId, quantity: item.quantity, unit: item.unit, unit_price: item.unitPrice })));
+        if (added.error) throw added.error;
+      }
+      await admin.from("commerce_carts").update({ updated_at: new Date().toISOString(), created_by: String(body.createdBy || "customer") === "she_agent" ? "she_agent" : "customer" }).eq("id", cartId);
+      return NextResponse.json({ ok: true, snapshot: await commerceSnapshot(ctx) });
+    }
+
+    if (action === "checkout_cart") {
+      if (profile.role !== "customer") return NextResponse.json({ error: "Customer access required." }, { status: 403 });
+      const draft = await draftCartForCustomer(admin, profile.id);
+      const cartId = draft.cart?.id ? String(draft.cart.id) : "";
+      if (!cartId || !draft.items.length) return NextResponse.json({ error: "Your cart is empty." }, { status: 409 });
+      const productIds = [...new Set(draft.items.map((item) => String(item.menu_item_id)))];
+      const products = await admin.from("vendor_menu_items").select("id,vendor_id,name,unit,vendor_base_price,active,stock_quantity").in("id", productIds);
+      if (products.error) throw products.error;
+      const productMap = new Map((products.data || []).map((item) => [String(item.id), item]));
+      const grouped = new Map<string, Array<Record<string, unknown>>>();
+      for (const item of draft.items) {
+        const product = productMap.get(String(item.menu_item_id));
+        if (!product || !product.active || Number(product.stock_quantity || 0) <= 0) continue;
+        const list = grouped.get(String(product.vendor_id)) || [];
+        list.push({ ...item, product });
+        grouped.set(String(product.vendor_id), list);
+      }
+      if (!grouped.size) return NextResponse.json({ error: "The items in your cart are no longer available." }, { status: 409 });
+      const scheduledDate = String(body.scheduledDate || addDays(new Date().toISOString().slice(0,10), 1));
+      const scheduledSlot = String(body.slot || "07:00–08:00 AM");
+      const orderIds: string[] = [];
+      for (const [vendorId, items] of grouped.entries()) {
+        const vendor = await admin.from("vendors").select("delivery_enabled,pickup_enabled").eq("id", vendorId).maybeSingle();
+        const fulfilmentMode = vendor.data?.delivery_enabled === false && vendor.data?.pickup_enabled ? "self_pickup" : "vendor_delivery";
+        let vendorBaseTotal = 0; let customerTotal = 0;
+        const orderItems = items.map((item) => {
+          const product = item.product as Record<string, unknown>;
+          const quantity = Math.max(0.001, Number(item.quantity || 1));
+          const base = Math.max(0, Number(product.vendor_base_price || 0));
+          const price = Math.max(0, Number(item.unit_price || base));
+          vendorBaseTotal += base * quantity; customerTotal += price * quantity;
+          return { product_name: String(product.name || "Product"), quantity, unit: String(item.unit || product.unit || "pack"), vendor_base_price: base, markup_percent: base > 0 ? Math.max(0, ((price / base) - 1) * 100) : 0, customer_price: price };
+        });
+        const inserted = await admin.from("orders").insert({ order_number: orderNumber(), customer_id: profile.id, vendor_id: vendorId, vendor_base_total: vendorBaseTotal, markup_total: Math.max(0, customerTotal - vendorBaseTotal), tax_amount: 0, delivery_fee: 0, customer_total: customerTotal, fulfilment_mode: fulfilmentMode, scheduled_date: scheduledDate, scheduled_slot: scheduledSlot, status: "awarded" }).select("id,order_number").single();
+        if (inserted.error) throw inserted.error;
+        orderIds.push(inserted.data.id);
+        const itemInsert = await admin.from("order_items").insert(orderItems.map((item) => ({ order_id: inserted.data.id, ...item })));
+        if (itemInsert.error) throw itemInsert.error;
+        const payment = await admin.from("payments").insert({ order_id: inserted.data.id, customer_id: profile.id, amount: customerTotal, status: "pending", provider: "checkout" });
+        if (payment.error) throw payment.error;
+        await admin.from("notifications").insert({ recipient_id: profile.id, kind: "payment", title: "Complete payment", body: `${inserted.data.order_number} is ready for payment.`, entity_type: "order", entity_id: inserted.data.id });
+      }
+      await admin.from("commerce_carts").update({ status: "converted", updated_at: new Date().toISOString() }).eq("id", cartId).eq("customer_id", profile.id);
+      return NextResponse.json({ ok: true, orderIds, snapshot: await commerceSnapshot(ctx) });
+    }
+
     if (action === "create_schedule") {
       if (profile.role !== "customer") return NextResponse.json({ error: "Customer access required." }, { status: 403 });
       const productId = String(body.productId || "");
@@ -183,6 +287,29 @@ export async function POST(request: Request) {
       await admin.from("notifications").insert({ recipient_id: profile.id, kind: "payment", title: "Payment confirmed", body: `${order.order_number} is confirmed and has been sent to the vendor.`, entity_type: "order", entity_id: order.id });
       await admin.from("communication_outbox").update({ status: "cancelled" }).eq("recipient_id", profile.id).eq("template_key", "payment_reminder").contains("payload", { orderId: order.id }).eq("status", "queued");
       return NextResponse.json({ ok: true, snapshot: await commerceSnapshot(ctx) });
+    }
+
+
+    if (action === "notify_nutrition_review") {
+      if (profile.role !== "vendor" || !profile.vendor_id) return NextResponse.json({ error: "Vendor access required." }, { status: 403 });
+      const productId = String(body.productId || "");
+      const productName = String(body.productName || "Product").trim() || "Product";
+      const reason = String(body.reason || "Nutrition is not yet verified.").slice(0, 500);
+      const { data: product } = await admin.from("vendor_menu_items").select("id,vendor_id,name").eq("id", productId).eq("vendor_id", profile.vendor_id).maybeSingle();
+      if (!product) return NextResponse.json({ error: "Product not found for this store." }, { status: 404 });
+      // The status column is added by the v6.1 migration. Ignore the update error so a
+      // missing migration never blocks the vendor from selling the product.
+      await admin.from("vendor_menu_items").update({ nutrition_status: "pending_review", nutrition_note: reason, updated_at: new Date().toISOString() }).eq("id", productId).eq("vendor_id", profile.vendor_id);
+      const { data: operators } = await admin.from("profiles").select("id").eq("role", "operations");
+      const rows = (operators || []).map((operator) => ({
+        recipient_id: operator.id, kind: "nutrition_review", title: "Nutrition review needed",
+        body: `${productName} needs a nutrition review. ${reason}`, entity_type: "product", entity_id: productId,
+      }));
+      if (rows.length) {
+        const notified = await admin.from("notifications").insert(rows);
+        if (notified.error) throw notified.error;
+      }
+      return NextResponse.json({ ok: true, notified: rows.length });
     }
 
 

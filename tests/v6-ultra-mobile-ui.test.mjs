@@ -47,8 +47,8 @@ test('PWA metadata is prepared for standalone mobile installation', () => {
   assert.match(manifest, /icon-maskable-512\.png/);
 });
 
-test('release is versioned as 6.0.0', () => {
-  assert.equal(pkg.version, '6.0.0');
+test('release is versioned as 6.2.0', () => {
+  assert.equal(pkg.version, '6.2.0');
 });
 
 test('public entry stays responsive for customer and vendor access', () => {

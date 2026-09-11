@@ -282,3 +282,8 @@ The production assistant now verifies the signed-in account before loading conte
 For an existing v4.6/v4.7 database, apply `supabase/V4_8_ROLE_AGENT_SECURITY.sql`. In production keep `NEXT_PUBLIC_DEMO_MODE=false`; demo mode is intended only for local testing.
 
 See `FINAL_V4_8_ROLE_SECURITY_RELEASE_NOTES.md` for the exact role boundaries and validation coverage.
+
+
+## v6.1 production mobile + nutrition migration
+
+For v6.1, run `supabase/V6_1_MOBILE_NUTRITION_FLOW.sql` after the existing v5 production migrations. This release fixes paid-schedule visibility and mobile auth/layout issues and makes nutrition optional with an Operations review workflow. See `V6_1_MOBILE_FLOW_NUTRITION_RELEASE_NOTES.md`.
