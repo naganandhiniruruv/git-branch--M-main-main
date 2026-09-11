@@ -163,11 +163,13 @@ export async function loadLiveMarketplace(latitude: number, longitude: number) {
   ]);
   if (items.error) throw items.error;
   if (diagnostics.error) throw diagnostics.error;
+  if (homeConfig.error) console.error("Homepage merchandising is unavailable:", homeConfig.error.message);
   const config = homeConfig.error ? null : homeConfig.data?.config as { featuredProductIds?: string[]; recommendationPopupEnabled?: boolean; maxFeatured?: number } | null;
   return {
     items: (items.data || []) as LiveMarketplaceRow[],
     diagnostics: ((diagnostics.data || [])[0] || null) as MarketplaceDiagnostics | null,
     merchandising: { featuredProductIds: config?.featuredProductIds || [], recommendationPopupEnabled: config?.recommendationPopupEnabled ?? true, maxFeatured: config?.maxFeatured || 6 },
+    merchandisingError: homeConfig.error ? homeConfig.error.message : null,
   };
 }
 
@@ -199,8 +201,11 @@ export async function loadLiveOperationsWorkspace() {
     supabase.from("marketing_campaigns").select("id,name,audience,offer,channel,status,ai_rationale,created_at").order("created_at", { ascending: false }).limit(100),
   ]);
   for (const result of [vendors, products, profiles, documents]) if (result.error) throw result.error;
+  if (homeConfig.error) console.error("Homepage merchandising is unavailable:", homeConfig.error.message);
+  if (campaigns.error) console.error("Marketing campaigns are unavailable:", campaigns.error.message);
   const config = homeConfig.error ? null : homeConfig.data?.config as { featuredProductIds?: string[]; recommendationPopupEnabled?: boolean; maxFeatured?: number } | null;
-  return { vendors: (vendors.data || []) as LiveVendorRow[], products: (products.data || []) as LiveMenuItemRow[], profiles: profiles.data || [], documents: documents.data || [], merchandising: { featuredProductIds: config?.featuredProductIds || [], recommendationPopupEnabled: config?.recommendationPopupEnabled ?? true, maxFeatured: config?.maxFeatured || 6 }, campaigns: campaigns.error ? [] : (campaigns.data || []) };
+  const merchandisingError = homeConfig.error?.message || campaigns.error?.message || null;
+  return { vendors: (vendors.data || []) as LiveVendorRow[], products: (products.data || []) as LiveMenuItemRow[], profiles: profiles.data || [], documents: documents.data || [], merchandising: { featuredProductIds: config?.featuredProductIds || [], recommendationPopupEnabled: config?.recommendationPopupEnabled ?? true, maxFeatured: config?.maxFeatured || 6 }, campaigns: campaigns.error ? [] : (campaigns.data || []), merchandisingError };
 }
 
 export async function saveLiveMarketplaceHome(config: { featuredProductIds: string[]; recommendationPopupEnabled: boolean; maxFeatured: number }) {

@@ -17,6 +17,28 @@ export async function GET(request: Request) {
   const lat = Number(input.get("lat"));
   const lng = Number(input.get("lng"));
   const query = input.get("q")?.trim();
+  const suggest = input.get("suggest") === "1";
+
+  if (suggest) {
+    if (!query || query.length < 3) return NextResponse.json({ suggestions: [] });
+    const endpoint = new URL("https://nominatim.openstreetmap.org/search");
+    endpoint.searchParams.set("q", query);
+    endpoint.searchParams.set("format", "jsonv2");
+    endpoint.searchParams.set("limit", "5");
+    endpoint.searchParams.set("countrycodes", "in");
+    endpoint.searchParams.set("addressdetails", "1");
+    try {
+      const response = await fetch(endpoint, { headers, signal: AbortSignal.timeout(6000) });
+      if (!response.ok) throw new Error(`Map provider returned ${response.status}`);
+      const raw = await response.json() as NominatimPlace[];
+      const suggestions = (Array.isArray(raw) ? raw : [])
+        .filter((place) => place?.lat && place?.lon && place?.display_name)
+        .map((place) => ({ address: place.display_name as string, latitude: Number(place.lat), longitude: Number(place.lon) }));
+      return NextResponse.json({ suggestions }, { headers: { "Cache-Control": "private, max-age=120" } });
+    } catch {
+      return NextResponse.json({ suggestions: [] });
+    }
+  }
 
   let endpoint: URL;
   if (query) {
