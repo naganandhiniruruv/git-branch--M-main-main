@@ -14,7 +14,7 @@ const migration = fs.readFileSync(path.join(root, 'supabase/V6_1_MOBILE_NUTRITIO
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
 test('v6.1 mobile auth remains usable with the keyboard open', () => {
-  assert.equal(pkg.version, '6.2.0');
+  assert.equal(pkg.version, '7.2.0');
   assert.match(entry, /sp-auth-dialog/);
   assert.match(entry, /scrollIntoView\(\{ block: "center"/);
   assert.match(entry, /autoComplete="one-time-code"/);

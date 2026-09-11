@@ -39,6 +39,17 @@ function fulfilment(value: string) {
   return /pickup/i.test(value) ? "self_pickup" : "vendor_delivery";
 }
 
+function resolveFulfilmentMode(vendor: { delivery_enabled?: boolean | null; pickup_enabled?: boolean | null } | null | undefined, requestedMode: string) {
+  const deliveryEnabled = vendor?.delivery_enabled !== false;
+  const pickupEnabled = vendor?.pickup_enabled === true;
+  const requested = fulfilment(requestedMode);
+  if (requested === "self_pickup" && pickupEnabled) return "self_pickup";
+  if (requested === "vendor_delivery" && deliveryEnabled) return "vendor_delivery";
+  if (deliveryEnabled) return "vendor_delivery";
+  if (pickupEnabled) return "self_pickup";
+  return null;
+}
+
 const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
 function addDays(dateISO: string, days: number) { const date = new Date(`${dateISO}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); }
@@ -194,7 +205,8 @@ export async function POST(request: Request) {
       const orderIds: string[] = [];
       for (const [vendorId, items] of grouped.entries()) {
         const vendor = await admin.from("vendors").select("delivery_enabled,pickup_enabled").eq("id", vendorId).maybeSingle();
-        const fulfilmentMode = vendor.data?.delivery_enabled === false && vendor.data?.pickup_enabled ? "self_pickup" : "vendor_delivery";
+        const fulfilmentMode = resolveFulfilmentMode(vendor.data, String(body.mode || "Vendor delivery"));
+        if (!fulfilmentMode) return NextResponse.json({ error: "This vendor does not currently support delivery or pickup." }, { status: 409 });
         let vendorBaseTotal = 0; let customerTotal = 0;
         const orderItems = items.map((item) => {
           const product = item.product as Record<string, unknown>;
@@ -222,6 +234,9 @@ export async function POST(request: Request) {
       const productId = String(body.productId || "");
       const { data: product, error: productError } = await admin.from("vendor_menu_items").select("id,vendor_id,name,unit,vendor_base_price,active,stock_quantity").eq("id", productId).maybeSingle();
       if (productError || !product || !product.active || Number(product.stock_quantity) <= 0) return NextResponse.json({ error: "This product is no longer available." }, { status: 409 });
+      const vendorRow = await admin.from("vendors").select("delivery_enabled,pickup_enabled").eq("id", product.vendor_id).maybeSingle();
+      const fulfilmentMode = resolveFulfilmentMode(vendorRow.data, String(body.mode || "Vendor delivery"));
+      if (!fulfilmentMode) return NextResponse.json({ error: "This vendor does not currently support delivery or pickup." }, { status: 409 });
       const quantity = Math.max(0.001, Number(body.quantity || 1));
       const customerPrice = Math.max(0, Number(body.customerPrice || product.vendor_base_price));
       const startDate = String(body.startDate || "");
@@ -231,7 +246,7 @@ export async function POST(request: Request) {
         recurrence: recurrence(String(body.recurrence || "once")),
         weekdays: Array.isArray(body.weekdays) ? body.weekdays.map((d) => weekdayMap[String(d)]).filter((n) => Number.isInteger(n)) : [],
         scheduled_slot: String(body.slot || "Vendor to confirm"), quantity, unit: String(body.unit || product.unit),
-        fulfilment_mode: fulfilment(String(body.mode || "Vendor delivery")), status: "active",
+        fulfilment_mode: fulfilmentMode, status: "awaiting_payment",
         whatsapp_reminder_enabled: body.whatsappReminder !== false,
       }).select("id").single();
       if (scheduleInsert.error) throw scheduleInsert.error;
@@ -239,7 +254,7 @@ export async function POST(request: Request) {
         order_number: orderNumber(), schedule_id: scheduleInsert.data.id, customer_id: profile.id, vendor_id: product.vendor_id,
         vendor_base_total: Number(product.vendor_base_price) * quantity, markup_total: Math.max(0, customerPrice - Number(product.vendor_base_price)) * quantity,
         tax_amount: 0, delivery_fee: 0, customer_total: Number(body.perDeliveryTotal || customerPrice * quantity),
-        fulfilment_mode: fulfilment(String(body.mode || "Vendor delivery")), scheduled_date: startDate,
+        fulfilment_mode: fulfilmentMode, scheduled_date: startDate,
         scheduled_slot: String(body.slot || "Vendor to confirm"), status: "awarded",
       }).select("id,order_number").single();
       if (orderInsert.error) throw orderInsert.error;
@@ -263,6 +278,7 @@ export async function POST(request: Request) {
       const updated = await admin.from("payments").update({ status: "paid", provider: String(body.method || "checkout").toLowerCase(), provider_reference: String(body.reference || `SIM-${Date.now()}`), updated_at: new Date().toISOString() }).eq("order_id", order.id).eq("customer_id", profile.id);
       if (updated.error) throw updated.error;
       await admin.from("orders").update({ status: "confirmed", updated_at: new Date().toISOString() }).eq("id", order.id);
+      if (order.schedule_id) await admin.from("product_schedules").update({ status: "active", updated_at: new Date().toISOString() }).eq("id", order.schedule_id).eq("status", "awaiting_payment");
       const rawSchedule = Array.isArray(order.product_schedules) ? order.product_schedules[0] : order.product_schedules;
       const dates = rawSchedule ? scheduleDates(rawSchedule as { start_date: string; end_date?: string | null; recurrence: string; weekdays?: number[] | null }) : [String(order.scheduled_date)];
       const firstItem = Array.isArray(order.order_items) ? order.order_items[0] : order.order_items;

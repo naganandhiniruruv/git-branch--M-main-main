@@ -47,12 +47,12 @@ test('PWA metadata is prepared for standalone mobile installation', () => {
   assert.match(manifest, /icon-maskable-512\.png/);
 });
 
-test('release is versioned as 6.2.0', () => {
-  assert.equal(pkg.version, '6.2.0');
+test('release inherits the v7 visual version', () => {
+  assert.equal(pkg.version, '7.2.0');
 });
 
 test('public entry stays responsive for customer and vendor access', () => {
   assert.match(entry, /sm:hidden">Vendor/);
-  assert.match(entry, /sm:hidden">Customer/);
+  assert.match(entry, /sm:hidden">Sign in/);
   assert.match(entry, /hide-scrollbar/);
 });
