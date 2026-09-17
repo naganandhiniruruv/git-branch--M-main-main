@@ -36,13 +36,67 @@ export async function loginAsStaff(page: Page, who: "vendor" | "operations" | "a
   await page.waitForSelector('text=Loading your ShePlates profile', { state: "hidden", timeout: 15_000 }).catch(() => {});
 }
 
+/** Signs out via the in-app button (does NOT clear localStorage) and signs
+ * back in as a different demo role — for tests that follow one piece of data
+ * (an RFQ, a ticket, a transaction) across roles. The mock local-state blob
+ * (`sheplates-v3-state`) is shared across all roles in one browser, so this
+ * is how a customer-created RFQ becomes visible to a vendor/operations login
+ * in the same test. loginAsCustomer/loginAsStaff would wipe that blob. */
+export async function switchTo(page: Page, who: "customer" | "vendor" | "operations" | "admin") {
+  const signOut = page.getByRole("button", { name: "Sign out" });
+  // Staff headers show "Sign out" directly; the customer header hides it
+  // inside the account dropdown/sheet, which must be opened first.
+  if (!(await signOut.isVisible().catch(() => false))) {
+    await page.locator('[data-tour="account"]:visible, [data-tour="account-mobile"]:visible').first().click();
+  }
+  await signOut.click();
+  // On narrow viewports a stack of "Signed out" toasts (one per switchTo call
+  // in a multi-role test) can sit directly over the header's login buttons —
+  // sonner's toast history doesn't reliably clear between quick role swaps.
+  // The located button is confirmed correct (see the anchored regex below);
+  // force the click rather than fight transient decorative overlay elements.
+  if (who === "customer") {
+    await page.getByRole("button", { name: /^Customer login$|^Sign in$/ }).click({ force: true });
+  } else {
+    // Anchored: an unanchored /Vendor/ also matches staff sidebar nav items
+    // ("Vendor onboarding", "Vendor payments", ...) that can still be present
+    // in the DOM for a moment during the sign-out transition.
+    await page.getByRole("button", { name: /^Vendor(\s*\/\s*Team)?$/ }).click({ force: true });
+  }
+  await page.getByLabel("Email").fill(DEMO[who].email);
+  await page.getByLabel("Password").fill(DEMO[who].password);
+  await page.locator("form").getByRole("button", { name: "Sign in" }).click();
+  await page.waitForSelector('text=Loading your ShePlates profile', { state: "hidden", timeout: 15_000 }).catch(() => {});
+  // Confirm the session is fully established and rendered before reloading —
+  // reloading too early can race the Supabase auth write and sign back out.
+  if (who === "customer") {
+    await page.locator('[data-tour="account"]:visible, [data-tour="account-mobile"]:visible').first().waitFor({ timeout: 15_000 });
+  } else {
+    await page.getByRole("button", { name: "Sign out" }).waitFor({ timeout: 15_000 });
+  }
+  // A same-page sign-out/sign-in (no full navigation) leaves the mobile
+  // responsive shell — the hamburger drawer in particular — uninitialized on
+  // some viewports. A reload is harmless (the Supabase session and the shared
+  // local mock-state blob both live in storage that survives it) and matches
+  // what a real user gets after any browser refresh.
+  await page.reload();
+  await page.waitForSelector('text=Loading your ShePlates profile', { state: "hidden", timeout: 15_000 }).catch(() => {});
+}
+
 /** Opens the staff sidebar drawer if it's currently a closed hamburger menu
  * (narrow viewports only — on desktop the sidebar is always visible and this
  * button is a harmless no-op toggle). */
 export async function openStaffNavIfCollapsed(page: Page) {
   const toggle = page.getByRole("button", { name: "Toggle navigation" });
-  if (await toggle.isVisible().catch(() => false)) {
+  try {
+    // An instant isVisible() check can race a just-completed navigation or
+    // reload before the responsive shell finishes settling — wait briefly
+    // instead. On desktop the toggle never exists, so this just times out
+    // quickly and falls through as the harmless no-op it always was.
+    await toggle.waitFor({ state: "visible", timeout: 1500 });
     await toggle.click();
+  } catch {
+    // Desktop, or the sidebar was already open — nothing to do.
   }
 }
 
