@@ -17,6 +17,9 @@ export type LiveMarketplaceRow = {
   fat_g: number; fibre_g: number; dietary_tags: string[]; pack_amount: number | null;
   pack_measure: string | null; delivery_enabled: boolean; pickup_enabled: boolean;
   distance_km: number;
+  // Added by V7_6_MARKETPLACE_NEARBY_RETURN_COORDS.sql — undefined until that
+  // migration is applied, since the RPC simply won't return these columns yet.
+  vendor_lat?: number; vendor_lng?: number;
 };
 
 export type MarketplaceDiagnostics = {

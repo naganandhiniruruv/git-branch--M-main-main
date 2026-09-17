@@ -28,6 +28,26 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { ShePlatesEntry } from "@/components/sheplates-entry";
+import type { NearbyVendorsMap as NearbyVendorsMapComponent, MapVendor } from "@/components/nearby-vendors-map";
+import { VendorQrCode } from "@/components/vendor-qr-code";
+
+type NearbyVendorsMapProps = React.ComponentProps<typeof NearbyVendorsMapComponent>;
+
+// Leaflet touches `window` at module-evaluation time, which breaks this
+// RSC-style app's server-rendered first pass of "use client" components.
+// next/dynamic's ssr:false isn't reliably supported by vinext's shim (it
+// broke React's hook dispatcher entirely), so this loads the module by hand
+// inside useEffect — guaranteed client-only, framework-agnostic.
+function NearbyVendorsMap(props: NearbyVendorsMapProps) {
+  const [Component, setComponent] = useState<typeof NearbyVendorsMapComponent | null>(null);
+  useEffect(() => {
+    let alive = true;
+    import("@/components/nearby-vendors-map").then((mod) => { if (alive) setComponent(() => mod.NearbyVendorsMap); });
+    return () => { alive = false; };
+  }, []);
+  if (!Component) return <div className="grid h-[420px] place-items-center rounded-[26px] border border-stone-200/70 bg-stone-50 text-sm text-stone-400">Loading map…</div>;
+  return <Component {...props} />;
+}
 import { categories } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
 import { nutritionLooksConsistent, type Nutrition } from "@/lib/nutrition";
@@ -532,6 +552,7 @@ export function ShePlatesV3() {
           marketplace.items.forEach((row) => unique.set(row.vendor_id, {
             id: row.vendor_id, ownerEmail: "vendor@sheplates.local", ownerName: "Verified vendor", businessName: row.vendor_name,
             category: row.category, address: "Serviceable near your delivery pin", radiusKm: Math.max(1, Number(row.distance_km)),
+            latitude: Number.isFinite(row.vendor_lat) ? row.vendor_lat : undefined, longitude: Number.isFinite(row.vendor_lng) ? row.vendor_lng : undefined,
             delivery: row.delivery_enabled, pickup: row.pickup_enabled, openToday: true, fssaiNumber: "Verified",
             certificateName: "Private", expiryDate: "—", verification: "Verified", operational: "Active", plan: "Launch",
           }));
@@ -903,6 +924,28 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   const [draftAddress, setDraftAddress] = useState(profile.address);
   const [draftCoords, setDraftCoords] = useState<{ lat?: number; lng?: number }>({ lat: profile.latitude, lng: profile.longitude });
   const locationConfirmed = Number.isFinite(profile.latitude) && Number.isFinite(profile.longitude);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [mapRadiusKm, setMapRadiusKm] = useState(10);
+  const [vendorFilter, setVendorFilter] = useState("");
+  const qrVendorHandled = useRef(false);
+
+  // A vendor's QR code links to "<origin>/?vendor=<id>" (there is no path
+  // router in this app, so a query param is the deep-link mechanism). Once
+  // this customer's marketplace vendors are loaded, jump straight to that
+  // vendor's products and drop the param so it doesn't linger in the URL.
+  useEffect(() => {
+    if (qrVendorHandled.current || !state.vendors.length) return;
+    const params = new URLSearchParams(window.location.search);
+    const vendorId = params.get("vendor");
+    if (!vendorId) return;
+    qrVendorHandled.current = true;
+    const vendor = state.vendors.find((v) => v.id === vendorId);
+    if (vendor) { setVendorFilter(vendorId); toast.success(`Showing ${vendor.businessName}'s shop`); }
+    else toast.error("That vendor's shop is not available right now.");
+    params.delete("vendor");
+    const next = params.toString();
+    window.history.replaceState({}, "", next ? `?${next}` : window.location.pathname);
+  }, [state.vendors]);
 
   async function refreshMarketplace(showSuccess = false) {
     if (!isLiveSupabaseMode() || !locationConfirmed) return;
@@ -911,7 +954,7 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
       const live = await loadLiveMarketplace(profile.latitude!, profile.longitude!);
       const products = live.items.map(marketplaceProductFromLive);
       const vendorMap = new Map<string, Vendor>();
-      live.items.forEach((row) => vendorMap.set(row.vendor_id, { id: row.vendor_id, ownerEmail: "vendor@sheplates.local", ownerName: "Verified vendor", businessName: row.vendor_name, category: row.category, address: "Serviceable near your delivery pin", radiusKm: Math.max(1, Number(row.distance_km)), delivery: row.delivery_enabled, pickup: row.pickup_enabled, openToday: true, fssaiNumber: "Verified", certificateName: "Private", expiryDate: "—", verification: "Verified", operational: "Active", plan: "Launch" }));
+      live.items.forEach((row) => vendorMap.set(row.vendor_id, { id: row.vendor_id, ownerEmail: "vendor@sheplates.local", ownerName: "Verified vendor", businessName: row.vendor_name, category: row.category, address: "Serviceable near your delivery pin", radiusKm: Math.max(1, Number(row.distance_km)), latitude: Number.isFinite(row.vendor_lat) ? row.vendor_lat : undefined, longitude: Number.isFinite(row.vendor_lng) ? row.vendor_lng : undefined, delivery: row.delivery_enabled, pickup: row.pickup_enabled, openToday: true, fssaiNumber: "Verified", certificateName: "Private", expiryDate: "—", verification: "Verified", operational: "Active", plan: "Launch" }));
       setDiagnostics(live.diagnostics);
       setState((current) => ({ ...current, products, vendors: [...vendorMap.values()], markups: {}, merchandising: live.merchandising || current.merchandising, merchandisingError: live.merchandisingError || null }));
       if (showSuccess) toast.success(products.length ? `${products.length} serviceable product pack(s) refreshed` : "Marketplace checked; see the eligibility explanation below");
@@ -969,15 +1012,31 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   }, [serviceableSignature, showAiPicks, state.merchandising.recommendationPopupEnabled]);
 
   const dietaryOptions = Array.from(new Set(serviceable.flatMap((product) => product.dietaryTags))).filter(Boolean).slice(0, 10);
+  const mapVendors: MapVendor[] = useMemo(() => {
+    if (!locationConfirmed) return [];
+    const byVendor = new Map<string, MapVendor>();
+    for (const product of serviceable) {
+      const vendor = state.vendors.find((v) => v.id === product.vendorId);
+      if (!vendor || !Number.isFinite(vendor.latitude) || !Number.isFinite(vendor.longitude)) continue;
+      const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude) ?? 0;
+      const existing = byVendor.get(vendor.id);
+      if (existing) existing.productCount = (existing.productCount || 0) + 1;
+      else byVendor.set(vendor.id, { id: vendor.id, name: vendor.businessName, lat: vendor.latitude!, lng: vendor.longitude!, distanceKm: distance, verified: vendor.verification === "Verified", productCount: 1 });
+    }
+    return [...byVendor.values()].sort((a, b) => a.distanceKm - b.distanceKm);
+  }, [serviceable, state.vendors, locationConfirmed, profile.latitude, profile.longitude]);
   const filtered = serviceable.filter((product) => {
     const vendor = state.vendors.find((v) => v.id === product.vendorId)!;
     const text = `${product.name} ${product.category} ${vendor.businessName} ${product.dietaryTags.join(" ")}`.toLowerCase();
+    const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude);
     return (category === "All" || product.category === category)
       && (!query || text.includes(query.toLowerCase()))
       && (!maxPrice || finalPrice(product, state) <= maxPrice)
       && (!maxCalories || product.calories <= maxCalories)
       && (!minProtein || product.protein >= minProtein)
-      && (dietary === "All" || product.dietaryTags.includes(dietary));
+      && (dietary === "All" || product.dietaryTags.includes(dietary))
+      && (!mapOpen || distance === null || distance <= mapRadiusKm)
+      && (!vendorFilter || product.vendorId === vendorFilter);
   });
 
   const preferenceScore = (product: Product) => {
@@ -1015,8 +1074,30 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
       <div className="sp-market-toolbar-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 md:grid-cols-[.8fr_1.2fr_auto] xl:grid-cols-[.72fr_1.28fr_auto]">
         <button data-tour="location" onClick={() => { setDraftAddress(profile.address); setDraftCoords({ lat: profile.latitude, lng: profile.longitude }); setLocationOpen(true); }} className={`col-span-2 flex h-12 min-w-0 items-center rounded-2xl px-3 text-left md:col-span-1 ${locationConfirmed ? "bg-[#f1f6eb]" : "bg-amber-50 ring-1 ring-amber-300"}`}><MapPin className={`mr-2 size-5 shrink-0 ${locationConfirmed ? "text-[#5ba400]" : "text-amber-700"}`} /><span className="min-w-0 flex-1 truncate text-sm font-bold">{locationConfirmed ? profile.address : "Confirm your delivery location"}</span><LocateFixed className="ml-2 size-4 shrink-0 text-[#5ba400]" /></button>
         <div data-tour="search" className="flex h-12 items-center rounded-2xl bg-stone-100/90 px-3"><Search className="mr-2 size-5 text-stone-500" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search food, vendor, category, dietary tag…" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button onClick={() => setQuery("")}><X className="size-4" /></button>}</div>
-        <button data-tour="filters" onClick={() => setFiltersOpen((value) => !value)} className={`flex h-12 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-black ${filtersOpen || activeFilterCount ? "border-[#5f8f2d] bg-[#eff6e6] text-[#50772a]" : "bg-white"}`}><Filter className="size-4" />Filters {activeFilterCount > 0 && <span className="grid size-5 place-items-center rounded-full bg-[#5f8f2d] text-[10px] text-white">{activeFilterCount}</span>}</button>
+        <div className="flex gap-2">
+          <button data-tour="filters" onClick={() => setFiltersOpen((value) => !value)} className={`flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-black ${filtersOpen || activeFilterCount ? "border-[#5f8f2d] bg-[#eff6e6] text-[#50772a]" : "bg-white"}`}><Filter className="size-4" />Filters {activeFilterCount > 0 && <span className="grid size-5 place-items-center rounded-full bg-[#5f8f2d] text-[10px] text-white">{activeFilterCount}</span>}</button>
+          <button data-tour="map" onClick={() => setMapOpen((value) => !value)} disabled={!locationConfirmed} className={`flex h-12 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-black disabled:opacity-40 ${mapOpen ? "border-[#237a45] bg-[#e8f2ea] text-[#153d2a]" : "bg-white"}`}><MapPinned className="size-4" />Map</button>
+        </div>
       </div>
+      {mapOpen && locationConfirmed && (
+        <div className="mt-3 space-y-2">
+          <NearbyVendorsMap
+            customerLat={profile.latitude!}
+            customerLng={profile.longitude!}
+            vendors={mapVendors}
+            radiusKm={mapRadiusKm}
+            onRadiusChange={setMapRadiusKm}
+            onSelectVendor={(vendorId) => setVendorFilter((current) => current === vendorId ? "" : vendorId)}
+          />
+          {!mapVendors.length && <p className="px-1 text-xs text-stone-500">No serviceable vendors have a saved map pin yet.</p>}
+        </div>
+      )}
+      {(mapOpen || vendorFilter) && (
+        <div className="flex flex-wrap items-center gap-2 px-1 text-xs font-bold text-stone-500">
+          {mapOpen && <span className="rounded-full bg-[#e8f2ea] px-3 py-1.5 text-[#153d2a]">Showing within {mapRadiusKm} km on the map</span>}
+          {vendorFilter && <button onClick={() => setVendorFilter("")} className="flex items-center gap-1.5 rounded-full bg-stone-100 px-3 py-1.5 text-stone-700"><MapPin className="size-3.5" />Viewing {state.vendors.find((v) => v.id === vendorFilter)?.businessName || "vendor"}<X className="size-3.5" /></button>}
+        </div>
+      )}
       {filtersOpen && <div className="sp-filter-drawer mt-3 grid gap-3 rounded-[22px] p-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
         <Field label="Planning from"><input type="date" min={tomorrow()} value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} className={inputClass} /></Field>
         <Field label="Planning period"><Select value={String(periodDays)} onValueChange={(value) => setPeriodDays(Number(value))}><SelectTrigger className="h-11 rounded-2xl"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="1">This date</SelectItem><SelectItem value="7">Next 7 days</SelectItem><SelectItem value="14">Next 14 days</SelectItem><SelectItem value="30">Next 30 days</SelectItem></SelectContent></Select></Field>
@@ -1369,6 +1450,7 @@ function StorefrontPos({ vendor, state, setState, session }: { vendor: Vendor; s
   return <div className="space-y-6"><Heading eyebrow="ONLINE SHOP" title="Brand storefront & POS locations" body="Manage the brand and each physical POS/outlet. Each outlet can keep its own certification details." action={<Button onClick={addOutlet} className="bg-[#5ba400]"><Plus />Add POS / outlet</Button>} />
     <div className="surface-card overflow-hidden rounded-[32px]"><div className="relative h-40 bg-gradient-to-r from-[#111611] to-[#34520d] sm:h-52">{vendor.bannerUrl && <img src={vendor.bannerUrl} alt="Store banner" className="h-full w-full object-cover" />}<div className="absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent" /><label className="absolute right-3 top-3 flex cursor-pointer items-center gap-2 rounded-full border border-white/60 bg-white/92 px-3 py-2 text-[11px] font-black text-[#171914] shadow-lg backdrop-blur"><input type="file" accept="image/*" className="hidden" onChange={(e) => asset("bannerUrl", e.target.files?.[0])} /><ImageUp className="size-4" /><span className="hidden sm:inline">Update cover</span></label></div><div className="relative p-5 pt-12 sm:p-6 sm:pt-14"><div className="absolute -top-10 left-5 size-20 sm:-top-12 sm:left-6 sm:size-24"><div className="grid h-full w-full place-items-center overflow-hidden rounded-[24px] border-4 border-white bg-[#eff7e5] text-3xl font-black text-[#5ba400] shadow-xl">{vendor.logoUrl ? <img src={vendor.logoUrl} alt="Store logo" className="h-full w-full object-cover" /> : vendor.businessName[0]}</div><label className="absolute -bottom-2 -right-2 grid size-9 cursor-pointer place-items-center rounded-full border-2 border-white bg-[#171914] text-white shadow-lg" title="Update logo"><input type="file" accept="image/*" className="hidden" onChange={(e) => asset("logoUrl", e.target.files?.[0])} /><Pencil className="size-3.5" /></label></div><h2 className="text-2xl font-black">{vendor.businessName}</h2><p className="text-sm text-stone-500">{vendor.category} · {state.products.filter((x) => x.vendorId === vendor.id && x.active).length} published products</p></div></div>
     <div className="grid gap-4 lg:grid-cols-2">{outlets.map((outlet) => <div key={outlet.id} className="surface-card rounded-[26px] p-5"><div className="flex items-start gap-3"><div className="grid size-11 place-items-center rounded-xl bg-[#eff7e5] text-[#5ba400]"><Building2 /></div><div className="min-w-0 flex-1"><b>{outlet.name}</b><p className="mt-1 text-sm text-stone-500">{outlet.address}</p></div><Status>{outlet.openToday ? "Open" : "Closed"}</Status></div><div className="mt-3 text-xs text-stone-500">Service radius: {outlet.radiusKm} km · {Number.isFinite(outlet.latitude) ? "Pinned" : "Needs map pin"}</div><div className="mt-4 rounded-2xl bg-[#f7f5f1] p-3 text-sm"><div className="flex items-center justify-between gap-3"><div><b>Outlet certification</b><div className="mt-1 text-xs text-stone-500">{outlet.certificateNumber || "Not added"}{outlet.certificateExpiry ? ` · expires ${outlet.certificateExpiry}` : ""}</div></div><Button size="sm" variant="outline" onClick={() => editCertification(outlet)}><Pencil />Edit</Button></div><label className="mt-3 inline-flex cursor-pointer items-center text-xs font-black text-[#50772a]"><input type="file" className="hidden" accept=".pdf,image/*" onChange={(e) => updateOutlet(outlet.id, { certificateName: e.target.files?.[0]?.name || outlet.certificateName })} /><Upload className="mr-1 size-3.5" />{outlet.certificateName || "Upload certificate"}</label></div></div>)}</div>
+    <VendorQrCode vendorId={vendor.id} vendorName={vendor.businessName} />
   </div>;
 }
 

@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { loginAsCustomer } from "./helpers";
+import { loginAsCustomer, resetTourCompletion, DEMO } from "./helpers";
 
 test.describe("Customer product tour", () => {
   test("auto-opens once, can be skipped, does not reopen, and replays from Help", async ({ page }) => {
+    await resetTourCompletion(DEMO.customer.email);
     await loginAsCustomer(page);
 
     const step1 = page.getByText("Step 1 of 10");

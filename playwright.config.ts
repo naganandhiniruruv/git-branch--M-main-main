@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// A couple of specs reset DB state (e.g. tour completion) directly via the
+// service-role key for deterministic setup — same env the app itself uses.
+try { process.loadEnvFile(".env.local"); } catch { /* fine without it — those specs just no-op */ }
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,

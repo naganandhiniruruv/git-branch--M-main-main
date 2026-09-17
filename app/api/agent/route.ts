@@ -168,25 +168,27 @@ async function authorisedContext(request: Request, body: AgentRequest) {
       supabase.from("support_tickets").select("id,ticket_number,subject,category,priority,status,created_at").eq("created_by", profile.id).order("created_at", { ascending: false }).limit(30),
     ]);
 
-    let availableProducts: unknown[] = [];
+    // These three round trips are independent of each other (marketplace only needs
+    // preferences, the cart fetch only needs the draft cart id, quotations only need
+    // requirements) — they used to run one after another; running them concurrently
+    // removes two full network round trips from every single chat message's latency.
     const latitude = Number(preferences.data?.latitude);
     const longitude = Number(preferences.data?.longitude);
-    if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-      const marketplace = await supabase.rpc("marketplace_menu_nearby", { customer_lat: latitude, customer_lng: longitude });
-      if (!marketplace.error) availableProducts = marketplace.data || [];
-    }
-
-    let cartItems: unknown[] = [];
     const cartId = carts.data?.[0]?.id;
-    if (cartId) {
-      const cartResult = await supabase.from("commerce_cart_items").select("id,menu_item_id,vendor_id,quantity,unit,unit_price").eq("cart_id", cartId).order("created_at", { ascending: true }).limit(100);
-      if (!cartResult.error) cartItems = cartResult.data || [];
-    }
-
-    const quotationResults = await Promise.all((requirements.data || []).slice(0, 12).map(async (requirement) => {
-      const quotes = await supabase.rpc("customer_quote_comparison", { target_requirement: requirement.id });
-      return { requirementId: requirement.id, quotes: quotes.error ? [] : (quotes.data || []) };
-    }));
+    const [marketplaceResult, cartResult, quotationResults] = await Promise.all([
+      Number.isFinite(latitude) && Number.isFinite(longitude)
+        ? supabase.rpc("marketplace_menu_nearby", { customer_lat: latitude, customer_lng: longitude })
+        : Promise.resolve({ data: [] as unknown[], error: null }),
+      cartId
+        ? supabase.from("commerce_cart_items").select("id,menu_item_id,vendor_id,quantity,unit,unit_price").eq("cart_id", cartId).order("created_at", { ascending: true }).limit(100)
+        : Promise.resolve({ data: [] as unknown[], error: null }),
+      Promise.all((requirements.data || []).slice(0, 12).map(async (requirement) => {
+        const quotes = await supabase.rpc("customer_quote_comparison", { target_requirement: requirement.id });
+        return { requirementId: requirement.id, quotes: quotes.error ? [] : (quotes.data || []) };
+      })),
+    ]);
+    const availableProducts: unknown[] = marketplaceResult.error ? [] : (marketplaceResult.data || []);
+    const cartItems: unknown[] = cartResult.error ? [] : (cartResult.data || []);
 
     const safePreferences = preferences.data ? {
       address: preferences.data.address,

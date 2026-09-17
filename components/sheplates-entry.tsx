@@ -44,6 +44,19 @@ export function ShePlatesEntry({ onLogin }: { onLogin: (session: DemoSession) =>
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [agentOpen, setAgentOpen] = useState(false);
 
+  // A vendor's QR code links to "<origin>/?vendor=<id>". There's no path
+  // router in this app, so signed-out visitors land here first; prompt
+  // sign-in immediately instead of leaving them on the generic landing page.
+  // ShePlatesV3 re-reads the same param after login to jump into that
+  // vendor's shop, so it's intentionally left in the URL here.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("vendor")) {
+      setAuthAudience("customer");
+      toast.info("Sign in to view and order from this vendor's shop.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const filteredPlans = useMemo(() => {
     const query = search.trim().toLowerCase();
     return plans.filter((plan) =>

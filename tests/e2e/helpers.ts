@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 
 export const DEMO = {
   customer: { email: "customer@sheplates.demo", password: "Customer@123" },
@@ -43,6 +44,22 @@ export async function openStaffNavIfCollapsed(page: Page) {
   if (await toggle.isVisible().catch(() => false)) {
     await toggle.click();
   }
+}
+
+/** Resets the product tour's completion state for a demo account directly in
+ * the database (profiles.tours_completed), so tour specs get a deterministic
+ * "first login" every run instead of depending on whether some earlier run
+ * (or manual testing) already dismissed it for that account. Requires
+ * SUPABASE_SERVICE_ROLE_KEY — the same env this whole app already needs. */
+export async function resetTourCompletion(email: string) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceKey) return;
+  const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
+  const { data: user } = await admin.auth.admin.listUsers();
+  const match = user?.users.find((u) => u.email === email);
+  if (!match) return;
+  await admin.from("profiles").update({ tours_completed: [] }).eq("id", match.id);
 }
 
 /** Dismisses the product tour if it auto-opened (it fires ~900ms after
