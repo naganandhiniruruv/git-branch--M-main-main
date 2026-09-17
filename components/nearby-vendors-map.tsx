@@ -36,9 +36,9 @@ const customerIcon = divIcon(
   `<span class="sp-map-you"><span class="sp-map-you-pulse"></span><span class="sp-map-you-dot"></span></span>`,
   28,
 );
-function vendorIcon(closest: boolean, inRange: boolean) {
+function vendorIcon(closest: boolean, inRange: boolean, index: number) {
   return divIcon(
-    `<span class="sp-map-vendor ${closest ? "sp-map-vendor-closest" : ""} ${inRange ? "" : "sp-map-vendor-dim"}">${closest ? '<span class="sp-map-vendor-ring"></span>' : ""}<span class="sp-map-vendor-pin">🏪</span></span>`,
+    `<span class="sp-map-vendor ${closest ? "sp-map-vendor-closest" : ""} ${inRange ? "" : "sp-map-vendor-dim"}" style="--sp-marker-delay:${Math.min(index, 8) * 45}ms">${closest ? '<span class="sp-map-vendor-ring"></span>' : ""}<span class="sp-map-vendor-pin">🏪</span></span>`,
     closest ? 36 : 30,
   );
 }
@@ -111,11 +111,11 @@ export function NearbyVendorsMap({
             },
           }}
         />
-        {vendors.map((vendor) => (
+        {vendors.map((vendor, index) => (
           <Marker
             key={vendor.id}
             position={[vendor.lat, vendor.lng]}
-            icon={vendorIcon(vendor.id === closestId, vendor.distanceKm <= effectiveRadius)}
+            icon={vendorIcon(vendor.id === closestId, vendor.distanceKm <= effectiveRadius, index)}
           >
             <Popup>
               <div className="min-w-[160px] text-sm">
