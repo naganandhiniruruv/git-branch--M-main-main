@@ -893,10 +893,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   background: #fff !important;
   box-shadow: var(--sp7-shadow-1) !important;
 }
-.sp-metric-card > div:first-child > div:first-child {
-  background: var(--sp7-orange-soft) !important;
-  color: var(--sp7-orange) !important;
-}
+/* Icon-box color/background is intentionally left to each Metric's `tone`
+   prop (see components/sheplates-v3.tsx) rather than forced here. */
 .sp-metric-card:hover { transform: translateY(-2px); box-shadow: var(--sp7-shadow-2) !important; }
 
 .sp-empty-state {
@@ -1951,7 +1949,10 @@ body {
 .sp-v7 .sp-portal-sidebar button { color: inherit; }
 
 .sp-v7 .sp-metric-card { border-radius: 20px !important; }
-.sp-v7 .sp-metric-card > div:first-child > div:first-child { background: var(--sp72-green-soft) !important; color: var(--sp72-green) !important; }
+/* Icon-box color/background is intentionally left to each Metric's `tone`
+   prop (see components/sheplates-v3.tsx) — this used to force every metric
+   icon to the same green with !important, which silently overrode any
+   attempt to color-code cards by category. */
 .sp-v7 [data-slot="table-container"] { border-radius: 20px; border-color: rgba(31,45,34,.075); box-shadow: 0 8px 28px rgba(23,35,26,.035); }
 .sp-v7 [data-slot="table-header"] { background: #f7f9f6; }
 .sp-v7 [data-slot="table-row"]:hover { background: #fafcf9; }

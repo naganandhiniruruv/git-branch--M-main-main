@@ -50,20 +50,35 @@ export async function switchTo(page: Page, who: "customer" | "vendor" | "operati
     await page.locator('[data-tour="account"]:visible, [data-tour="account-mobile"]:visible').first().click();
   }
   await signOut.click();
-  // On narrow viewports a stack of "Signed out" toasts (one per switchTo call
-  // in a multi-role test) can sit directly over the header's login buttons —
-  // sonner's toast history doesn't reliably clear between quick role swaps.
-  // The located button is confirmed correct (see the anchored regex below);
-  // force the click rather than fight transient decorative overlay elements.
-  if (who === "customer") {
-    await page.getByRole("button", { name: /^Customer login$|^Sign in$/ }).click({ force: true });
-  } else {
-    // Anchored: an unanchored /Vendor/ also matches staff sidebar nav items
-    // ("Vendor onboarding", "Vendor payments", ...) that can still be present
-    // in the DOM for a moment during the sign-out transition.
-    await page.getByRole("button", { name: /^Vendor(\s*\/\s*Team)?$/ }).click({ force: true });
+  // Confirm the (async) sign-out actually completed before doing anything
+  // else — otherwise the next click can race a still-authenticated page that
+  // hasn't torn down its dashboard yet, landing nowhere useful.
+  await page.getByText("Signed out").waitFor({ state: "visible", timeout: 8000 }).catch(() => {});
+  // On narrow viewports a stack of toasts accumulated during the test so far
+  // (this test's own "Signed out", "Payment successful", etc.) renders full-
+  // width right over the header's login buttons. Even a forced click still
+  // does a real hit-test at the button's on-screen coordinates, so whichever
+  // toast is topmost there eats the click instead — remove the toasts
+  // outright rather than fight z-order/timing. Sonner re-renders its own
+  // list from React state on the next toast, so removing these DOM nodes
+  // has no lasting effect beyond clearing the current visual stack.
+  await page.evaluate(() => document.querySelectorAll("[data-sonner-toast]").forEach((el) => el.remove()));
+  const loginButtonName = who === "customer" ? /^Customer login$|^Sign in$/ : /^Vendor(\s*\/\s*Team)?$/;
+  // Anchored: an unanchored /Vendor/ also matches staff sidebar nav items
+  // ("Vendor onboarding", "Vendor payments", ...) that can still be present
+  // in the DOM for a moment during the sign-out transition.
+  const emailField = page.getByLabel("Email");
+  let opened = false;
+  for (let attempt = 0; attempt < 3 && !opened; attempt++) {
+    await page.evaluate(() => document.querySelectorAll("[data-sonner-toast]").forEach((el) => el.remove()));
+    await page.getByRole("button", { name: loginButtonName }).click({ force: true });
+    // Occasionally (seen under full-suite load, more on mobile) this click
+    // still lands during the sign-out transition and never actually opens
+    // the dialog — self-heal by retrying rather than hanging the whole test.
+    opened = await emailField.waitFor({ state: "visible", timeout: 5000 }).then(() => true).catch(() => false);
   }
-  await page.getByLabel("Email").fill(DEMO[who].email);
+  if (!opened) throw new Error(`switchTo(${who}): login dialog never opened after 3 attempts`);
+  await emailField.fill(DEMO[who].email);
   await page.getByLabel("Password").fill(DEMO[who].password);
   await page.locator("form").getByRole("button", { name: "Sign in" }).click();
   await page.waitForSelector('text=Loading your ShePlates profile', { state: "hidden", timeout: 15_000 }).catch(() => {});

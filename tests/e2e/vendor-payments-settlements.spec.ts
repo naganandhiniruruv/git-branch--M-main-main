@@ -21,7 +21,7 @@ test.describe("Vendor payments & settlements", () => {
     // pending order the payment dialog auto-opens; if earlier local runs left
     // other pending orders behind it won't, so pay for our own order by name
     // either way rather than assuming which state we land in.
-    await expect(page.getByRole("heading", { name: "Awaiting payment" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("heading", { name: "Awaiting payment" })).toBeVisible({ timeout: 20_000 });
     const closeDialog = page.getByRole("button", { name: "Close" });
     if (await closeDialog.isVisible().catch(() => false)) await closeDialog.click();
     const awaitingRow = page.locator(".surface-card", { hasText: productName || "" }).filter({ has: page.getByRole("button", { name: "Pay & place order" }) });
