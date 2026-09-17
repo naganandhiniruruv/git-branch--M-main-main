@@ -39,10 +39,51 @@ Folded into the map and QR work rather than a separate redesign: the Marketplace
 ### 0.5 Testing this round
 Two new Playwright specs (`nearby-vendors-map.spec.ts`, `vendor-qr-code.spec.ts`), plus a `resetTourCompletion()` test helper added after confirming the round-1 tour-persistence migration is live in the database (demo accounts had genuinely already dismissed their tours from earlier manual testing, so the tour specs needed a deterministic DB reset rather than assuming a fresh account). Full current pass count in §7.1.
 
-### 0.6 Still not done from the original brief (see §9 for round 1's list)
-- RFQ/Monthly Requirement/Quotations, Ticket Centre, and Vendor Payments/Settlements/Reports remain without dedicated E2E coverage.
+### 0.6 Still not done as of round 2 — addressed in round 3 below (§0b)
+- RFQ/Monthly Requirement/Quotations, Ticket Centre, and Vendor Payments/Settlements/Reports had no dedicated E2E coverage.
 - The map's vendor pins need `V7_6` applied (§5) to show real coordinates — code-complete and tested for the no-migration-yet degrade path, but pins won't appear live until it's run.
 - Payments/WhatsApp remain simulated per the original instruction to leave them that way.
+
+---
+
+## 0b. Round 3 (2026-09-18) — sleeker UI, a real production bug fix, and the last E2E coverage
+
+### 0b.1 Typography and icons — "sleek", not a marketing splash page
+Requested directly: no big fonts, a more app-like feel, and unique icons in the spirit of (not copying) polished food-delivery apps. Two changes:
+
+- **Type scale cut down everywhere.** The public landing page's hero title was rendering at up to `6.3rem` (~100px) desktop / `4.8rem` mobile — a marketing-site headline, not an app screen. Every heading class above `text-xl` across both the app (`components/sheplates-v3.tsx`) and the landing page (`components/sheplates-entry.tsx`, `app/globals.css`) was brought down to a compact `text-lg`–`text-2xl` range: the shared `Heading` component used on every page title, all dialog titles, the onboarding wizard, and the landing hero/section titles.
+- **Emoji replaced with a real icon system.** Every product/category "icon" in the shipped app was a raw browser emoji (🍱, 🥛, 🛍️…) rendered as oversized text — inconsistent across OS/browser font rendering, and exactly the kind of thing that would look different again once wrapped as a native app. Added `categoryVisual()` in `lib/sheplates-data.ts`: a small map from each of the 8 product categories to a `lucide-react` icon and a distinct accent colour (blues/ambers/violets/greens — a varied palette, not Zomato-red or Swiggy-orange), reused by both the marketplace (`ProductGlyph`/`CategoryBadge` in `sheplates-v3.tsx`) and the landing page's category tiles and plan cards. Renders identically everywhere, no OS emoji-font dependency.
+
+Verified live in-browser before/after on desktop and mobile (375px) — see conversation for screenshots; not re-captured into `qa-screenshots/` this round.
+
+### 0b.2 Real bug found while testing RFQ: vendor plans never actually saved
+While building E2E coverage for Monthly Requirement (RFQ), manual testing surfaced a genuine production-blocking bug, not a testing gap: Super Admin's **Vendor plans** page lets you assign a vendor Launch/Growth/Premium, and it looked like it worked (a success toast, the table updates) — but the write only ever touched local React state. Nothing was persisted to Supabase. Every vendor session reloads its plan hardcoded to `"Launch"` regardless of what Super Admin picked, and the customer-facing RFQ eligibility check requires `plan === "Premium"` — so **no vendor could ever receive an RFQ in a real production deployment.** The database side of this was already fully built (`vendor_plans` catalogue table, `vendors.plan_id`, RLS restricting the assignment to admin/operations) and simply never wired into the client.
+
+Fixed:
+- `lib/supabase.ts`: new `saveLiveVendorPlan()` writes `vendors.plan_id`; the vendor's own workspace load and the operations/admin vendor-list load both now embed `vendor_plans(code,name)` instead of ignoring it.
+- `components/sheplates-v3.tsx`: every place a `Vendor` is built from live data now reads the real plan (`planFromCode()`); the admin "All vendors" plan selector calls `saveLiveVendorPlan` with optimistic UI and rollback on failure.
+- **`supabase/V7_7_MARKETPLACE_NEARBY_RETURN_PLAN.sql`** (new, not yet applied): adds the vendor's plan code to `marketplace_menu_nearby()`'s return columns, so a *customer's* RFQ eligibility check can see the real plan too (the admin/vendor-side fix above needs no migration — it's a plain foreign-key read — but the customer's own vendor list is built from this RPC).
+
+Verified live: granted "Murugan Daily Foods" (the `vendor@sheplates.demo` account) Premium as Super Admin, reloaded, signed in as that vendor, and confirmed the Premium-only "Quote opportunities" panel unlocked — where before this fix it would have shown "Quotation access is on Premium" forever, for every vendor, no matter what Super Admin did.
+
+### 0b.3 E2E coverage for the last four untested modules
+Four new specs close out the modules named explicitly in the original brief:
+
+| Spec | Covers |
+|---|---|
+| `rfq-quotations.spec.ts` | Customer publishes an RFQ, it appears under My quotations; the vendor-plan bug fix above (§0b.2) as a persistence regression guard; the vendor's own dashboard reflects a real, saved plan |
+| `ticket-centre.spec.ts` | Customer raises a ticket → Operations resolves it → Admin's read-only oversight view reflects the resolution, across all three roles in one continuous flow |
+| `vendor-payments-settlements.spec.ts` | A real customer payment creates a transaction; Operations sees it with a "Mark payout paid" action correctly **disabled** (same-day payment, not yet at its scheduled payout date — a direct regression guard for the `PAYOUT_CYCLE_DAYS` logic); Admin sees the same data strictly read-only |
+| `reports.spec.ts` | The default "Orders" report (real Supabase-backed data) previews and downloads as a genuine `.xlsx` file; the full 7-report catalogue is present for both Operations and Admin |
+
+These four modules' own *records* (RFQs, tickets, transactions/payouts) remain local-browser-mock state, not Supabase-backed — see §0b.4. The tests exercise the real UI and real logic (including now-real vendor plans) against that mock state, exactly as a user actually experiences the app today.
+
+A new `switchTo()` test helper (`tests/e2e/helpers.ts`) enables this: unlike `loginAsCustomer`/`loginAsStaff`, it signs out and back in via the in-app buttons without clearing `localStorage`, so a piece of data created as one role (an RFQ, a ticket) stays visible when the test switches to another role to react to it — needed because RFQ/tickets/payments all live in one shared local state blob, not per-role Supabase rows.
+
+**Full suite: 18 specs × 2 projects (desktop Chrome, mobile Pixel 7) = 36 tests, 36 passed, 0 failed** (last run: 2026-09-18).
+
+### 0b.4 Important scope note: RFQ/Tickets/Settlements are not Supabase-backed
+Discovered during this round's investigation, worth stating plainly for the production verdict (§9 has the full list): **`customer_requirements`, `rfq_vendor_invitations`, `vendor_quotes`, `support_tickets`, and `vendor_payouts` all have complete table schemas already migrated into Supabase — and the app's UI never reads or writes any of them.** Every RFQ, every ticket, every transaction/payout lives entirely in one `localStorage` blob (`sheplates-v3-state`) per browser. `supabase/V4_2_VENDOR_PAYOUTS.sql`'s own comment says as much: *"The shipped app keeps this ledger in browser local state... it is not required for local/demo use."* This was true before this round and remains true after it — the vendor-plan fix in §0b.2 is a narrower, different bug (a *field* that was silently discarded, not a *feature* that was never wired up). Wiring these three features to real Supabase tables is a real, scoped follow-on project, not a quick fix; flagging it clearly rather than leaving it implicit.
 
 ---
 
@@ -149,8 +190,9 @@ I do not have direct SQL-execution access to your Supabase project (only the app
 3. **`supabase/V7_4_PRODUCT_TOURS.sql`** *(new)* — adds `profiles.tours_completed text[]`. Enables §4.2's cross-device persistence (the tour already works without it, using session-only state). **Confirmed applied.**
 4. **`supabase/V7_5_FIX_VENDOR_VERIFICATION_RPC.sql`** *(new)* — re-creates `review_vendor_and_notify()` with correct enum casts. Fixes §3.4. **Confirmed applied** — direct RPC testing shows all vendors verified cleanly.
 5. **`supabase/V7_6_MARKETPLACE_NEARBY_RETURN_COORDS.sql`** *(new, round 2)* — re-creates `marketplace_menu_nearby()` adding `vendor_lat`/`vendor_lng` to its return columns. Enables §0.1's vendor map pins. **Not yet applied** — confirmed via a live RPC call still lacking these columns as of 2026-09-17. The map works without it (customer location + radius circle + controls all render); only the vendor pins are missing until this runs.
+6. **`supabase/V7_7_MARKETPLACE_NEARBY_RETURN_PLAN.sql`** *(new, round 3)* — re-creates `marketplace_menu_nearby()` again, this time adding `vendor_plan_code`. Fixes the customer-side half of §0b.2's vendor-plan bug (the admin/vendor-side half needs no migration). **Not yet applied.** Supersedes V7_6's function body, so applying this one alone (after or instead of V7_6) gets you both the coordinates and the plan code — it's a strict superset.
 
-None of these are destructive: 1, 3, and 5 are additive (new tables / new column / new return columns on an existing function), 2 widens an existing constraint, 4 replaces a function definition with equivalent-but-corrected logic. No existing data is modified or dropped.
+None of these are destructive: 1, 3, 5 and 6 are additive (new tables / new column / new return columns on an existing function), 2 widens an existing constraint, 4 replaces a function definition with equivalent-but-corrected logic. No existing data is modified or dropped.
 
 Also fixed as a **data issue**, not a schema change: the README's documented test identity `vendor@sheplates.demo` had a `profiles.vendor_id` of `null` in this database (never linked to a vendor), so it always hit first-time onboarding instead of the vendor dashboard. It's now linked to a real vendor row ("Murugan Daily Foods", submitted/pending verification) so the documented credential is actually usable, and I subsequently submitted it for verification through the real Operations UI (which is what surfaced bug §3.4).
 
@@ -169,7 +211,7 @@ Also fixed as a **data issue**, not a schema change: the README's documented tes
 ### 7.1 Playwright E2E
 `playwright.config.ts` + `tests/e2e/*.spec.ts`. Targets the app's own dev server, live against your Supabase project (not mocked).
 
-**13 specs × 2 projects (Desktop Chrome, mobile Pixel 7) = 26 tests, 26 passed, 0 failed** (last full run: 2026-09-17).
+**18 specs × 2 projects (Desktop Chrome, mobile Pixel 7) = 36 tests, 36 passed, 0 failed** (last full run: 2026-09-18).
 
 | Spec | Covers |
 |---|---|
@@ -180,8 +222,12 @@ Also fixed as a **data issue**, not a schema change: the README's documented tes
 | `admin-homepage-campaigns.spec.ts` | Regression guard for §3.3 — never shows a false "saved" state |
 | `nearby-vendors-map.spec.ts` *(round 2)* | Map opens from the toolbar; the +/− radius stepper updates the in-range vendor count; customer marker renders |
 | `vendor-qr-code.spec.ts` *(round 2)* | Vendor sees a generated, downloadable QR code; a signed-in customer's QR link filters to that vendor; a signed-out visitor is prompted to sign in |
+| `rfq-quotations.spec.ts` *(round 3)* | Customer publishes an RFQ; the vendor-plan persistence bug fix (§0b.2) as a regression guard; vendor's dashboard reflects the real saved plan |
+| `ticket-centre.spec.ts` *(round 3)* | Customer → Operations resolve → Admin oversight, across all three roles in one flow |
+| `vendor-payments-settlements.spec.ts` *(round 3)* | A real payment creates a transaction; "Mark payout paid" is correctly disabled same-day; Admin is read-only |
+| `reports.spec.ts` *(round 3)* | Default "Orders" report (real data) previews and downloads a genuine `.xlsx`; full report catalogue present |
 
-Not yet covered by this suite: RFQ/Monthly Requirement/Quotations, Ticket Centre, Vendor Payments/Settlements, Reports (see §9 and §0.6).
+Every module named in the original brief now has E2E coverage. See §0b.4 for the important caveat that RFQ/Tickets/Settlements records themselves are local-mock state, not Supabase-backed — the tests correctly exercise that as today's real behaviour.
 
 ### 7.2 Existing unit/contract tests
 The project's pre-existing `npm test` (`node --test tests/*.test.mjs`) was not modified and was not the focus of this pass; it was not re-run as part of this delivery beyond confirming `npm run build` (which it depends on) succeeds.
@@ -214,16 +260,17 @@ See `qa-screenshots/` for saved captures of the above.
 
 Being direct about scope: the original brief describes a multi-week program (full per-role redesign polish, a Playwright suite across ~15 flows, visual QA at 9 breakpoints × ~19 screens, RFQ/quotation/ticket E2E coverage, final packaging). This delivery is a real, verified foundation, not a claim of finishing that entire list:
 
-- **Not built:** dedicated Excel-report download verification, WhatsApp reminder delivery (payments/WhatsApp intentionally left simulated per your instruction), RFQ/Monthly-Requirement/Quotation E2E tests, Ticket Centre E2E tests, Delivery Team/Settlements visual QA.
-- **Not run:** the 9-breakpoint (320/375/390/430/768/1024/1280/1440/1600) screenshot matrix across every screen — only the breakpoints and screens in §8 were checked.
-- **Cart contains test data:** the `customer@sheplates.demo` account's cart currently holds leftover items from this session's manual and automated testing (harmless, but worth clearing before a demo).
-- The four SQL migrations in §5 must be run for the corresponding fixes to take effect in your live database — the code is correct and degrades gracefully without them, but the underlying features stay broken until they're applied.
+- **RFQ/Monthly Requirement, Ticket Centre, and Vendor Payments/Settlements are not Supabase-backed** (§0b.4). Every RFQ, ticket, and transaction/payout lives only in one browser's `localStorage`, even though the full schema for all of them (`customer_requirements`, `rfq_vendor_invitations`, `vendor_quotes`, `support_tickets`, `vendor_payouts`) already exists in Supabase, migrated and unused. This is the single biggest gap between "the app works in this browser session" and "this is a real multi-user production backend" — see the verdict below.
+- **WhatsApp reminder delivery** is not built; payments/WhatsApp remain intentionally simulated per your instruction.
+- **Delivery Team visual QA** and the full 9-breakpoint (320/375/390/430/768/1024/1280/1440/1600) screenshot matrix were not run across every screen — only the breakpoints and screens in §8 were checked, plus targeted mobile/desktop checks during rounds 2–3.
+- **Cart/test-data residue:** the `customer@sheplates.demo` account's cart, schedules, RFQs and tickets now hold leftover items from three rounds of manual and automated testing against the live Supabase project (harmless, but worth clearing — or resetting via `V3_RESET_TEST_DATA.sql` — before a demo).
+- **Six SQL migrations (§5)** must be run for their corresponding fixes to take effect in your live database — the code is correct and degrades gracefully without them, but the underlying features stay broken until they're applied. Two (`V7_6`, `V7_7`) are still pending as of this delivery.
 
 ---
 
 ## 10. Deployment notes — GitHub + Render
 
-This delivery is a local git repository (not yet pushed anywhere) with 7 commits on top of the original ZIP's baseline commit.
+This delivery is a local git repository (not yet pushed anywhere) with 11 commits on top of the original ZIP's baseline commit.
 
 **GitHub:**
 ```bash
@@ -235,4 +282,26 @@ git push -u origin main
 - Build command: `npm run install:ci && npm run build` (or `npm install && npm run build` if `install:ci`'s coreutils requirement isn't available on the target — this delivery's build was verified with `./node_modules/.bin/vinext build` directly for that reason; confirm `timeout`/`gtimeout` is available on your deploy image, or adjust `scripts/build-verified.sh` if not).
 - Start command: `npm run start` (`vinext start`).
 - Environment variables: copy your existing `.env.local` values (Supabase URL/anon/service-role keys, `OPENAI_API_KEY`) into Render's environment settings. No new variables are required by this delivery.
-- Run the four migrations in §5 against your production Supabase project **before or immediately after** deploying — the app degrades gracefully without them, but the fixed features won't actually work until they're applied.
+- Run the six migrations in §5 against your production Supabase project **before or immediately after** deploying — the app degrades gracefully without them, but the fixed features won't actually work until they're applied.
+
+---
+
+## 11. Production readiness verdict
+
+You asked directly: is this production ready? Honest answer — **conditionally yes for the core commerce loop, no for RFQ/Tickets/Payments as a real multi-user backend.** Specifically:
+
+**Ready for production, verified across three rounds of testing:**
+- Customer discovery, search, filters, the interactive nearby-vendors map, categories, She Agent recommendations.
+- Add-to-cart, scheduling, payment-gating (a schedule cannot activate before payment — the original bug is fixed and tested).
+- Vendor onboarding, verification (Operations/Admin can actually approve vendors now — this was completely broken before round 1), catalogue management, vendor QR deep links.
+- Product tours, location autocomplete, Super Admin homepage merchandising.
+- The agent chat's data-fetching is measurably faster (parallelized Supabase calls); the underlying multi-round tool-calling loop is unchanged and is the dominant remaining cost on complex questions.
+- All of the above: 36/36 Playwright tests green on desktop and mobile, `vinext build` clean, six migrations documented with exact apply-order and current status.
+
+**Not ready as-is — needs a decision from you before launch:**
+- **RFQ/Monthly Requirement, Ticket Centre, and Vendor Payments/Settlements are single-browser mock features, not a real backend.** They work perfectly in a demo (which is likely why this wasn't caught earlier) but two different customers, or a customer and a vendor on different devices, cannot actually see each other's RFQs, tickets, or payments — everything lives in one `localStorage` blob. This is not a bug I introduced or need to "fix a symptom of" — it's a scoped feature that was never connected to the already-built Supabase schema for it. Wiring it up is a real, bounded project (the tables, RLS, and even a UI-facing plan-entitlement system are already there — see §0b.2 for the one piece I did wire up this round), not a rewrite.
+- **The vendor Premium-plan bug (§0b.2)** — found and fixed this round — means every vendor plan assignment made before this fix, if any exist in your production data, was never actually saved. Worth a quick check of your live `vendors.plan_id` column after deploying this delivery.
+- **Two pending migrations** (`V7_6`, `V7_7`) — apply `V7_7` alone (it's a superset of `V7_6`) to get vendor map pins and correct RFQ eligibility working from day one.
+- **Payments and WhatsApp remain simulated** per your own instruction from round 1 — this was a deliberate scope decision, not an oversight, but it means no real money moves and no real WhatsApp messages send until those integrations are built.
+
+**Bottom line:** ship the marketplace/ordering/vendor-management core with confidence. Treat RFQ/Tickets/Settlements as a beta/internal feature until it's connected to real, multi-user storage — the current implementation will mislead any two people trying to use it together.
