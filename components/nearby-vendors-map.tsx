@@ -116,7 +116,6 @@ export function NearbyVendorsMap({
             key={vendor.id}
             position={[vendor.lat, vendor.lng]}
             icon={vendorIcon(vendor.id === closestId, vendor.distanceKm <= effectiveRadius)}
-            eventHandlers={onSelectVendor ? { click: () => onSelectVendor(vendor.id) } : undefined}
           >
             <Popup>
               <div className="min-w-[160px] text-sm">

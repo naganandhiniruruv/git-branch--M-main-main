@@ -23,4 +23,30 @@ test.describe("Interactive nearby-vendors map", () => {
     // any vendor has a saved coordinate yet (that needs the V7_6 migration).
     await expect(page.locator(".sp-map-you")).toBeVisible();
   });
+
+  test("clicking a vendor pin's 'View products' closes the map and reveals that vendor's filtered products", async ({ page }) => {
+    await loginAsCustomer(page);
+    await dismissTourIfOpen(page);
+
+    await page.getByRole("button", { name: "Map" }).click();
+    const map = page.locator(".sp-vendor-map");
+    await expect(map).toBeVisible({ timeout: 10_000 });
+
+    // Regression guard: the marker's own click and the popup's "View products"
+    // button used to share one toggle handler, so opening the popup (which
+    // fires a marker click) then confirming "View products" toggled the
+    // filter straight back off, and even a successful filter left the map
+    // covering the results with no indication anything had happened.
+    const vendorMarker = map.locator(".sp-map-vendor").first();
+    await expect(vendorMarker).toBeVisible({ timeout: 10_000 });
+    await vendorMarker.click();
+    await page.getByRole("button", { name: "View products" }).click();
+
+    await expect(map).not.toBeVisible();
+    const filterChip = page.getByText(/^Viewing /);
+    await expect(filterChip).toBeVisible();
+    const grid = page.locator('[data-tour="products"]');
+    await expect(grid).toBeVisible();
+    await expect(grid.locator("article").first()).toBeVisible();
+  });
 });

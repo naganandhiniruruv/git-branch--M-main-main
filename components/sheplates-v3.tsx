@@ -1102,7 +1102,7 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
             vendors={mapVendors}
             radiusKm={mapRadiusKm}
             onRadiusChange={setMapRadiusKm}
-            onSelectVendor={(vendorId) => setVendorFilter((current) => current === vendorId ? "" : vendorId)}
+            onSelectVendor={(vendorId) => { setVendorFilter(vendorId); setMapOpen(false); requestAnimationFrame(() => document.querySelector('[data-tour="products"]')?.scrollIntoView({ behavior: "smooth", block: "start" })); }}
           />
           {!mapVendors.length && <p className="px-1 text-xs text-stone-500">No serviceable vendors have a saved map pin yet.</p>}
         </div>
