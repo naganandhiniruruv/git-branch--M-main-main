@@ -1248,7 +1248,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .sp-v7 button,
   .sp-entry button { min-height: 44px; }
 
-  .sp-entry-hero h1 { font-size: clamp(2.55rem, 12vw, 4.4rem) !important; }
+  .sp-entry-hero h1 { font-size: clamp(1.6rem, 7.5vw, 2rem) !important; }
   .sp-entry-hero p { line-height: 1.6; }
   .sp-entry-search { margin-top: 24px !important; }
   .sp-entry-plan-card > div:first-child { height: 150px !important; }
@@ -1680,9 +1680,9 @@ body {
 }
 .sp-entry-title {
   max-width: 690px;
-  font-size: clamp(3.25rem, 5.6vw, 6.3rem);
-  line-height: .92;
-  letter-spacing: -.067em;
+  font-size: clamp(1.85rem, 2.6vw, 2.6rem);
+  line-height: 1.08;
+  letter-spacing: -.03em;
   font-weight: 900;
   color: #151916;
   text-wrap: balance;
@@ -1812,9 +1812,9 @@ body {
 }
 .sp-entry-section-title {
   margin-top: 7px;
-  font-size: clamp(1.8rem, 2.7vw, 2.65rem);
-  line-height: 1.05;
-  letter-spacing: -.045em;
+  font-size: clamp(1.25rem, 1.6vw, 1.5rem);
+  line-height: 1.15;
+  letter-spacing: -.02em;
   font-weight: 900;
 }
 .sp-entry-category {
@@ -1983,7 +1983,7 @@ body {
 .sp-agent-orb { background: linear-gradient(145deg,#3a8f5c,#237a45 55%,#153d2a) !important; }
 
 @media (max-width: 767px) {
-  .sp-entry-title { font-size: clamp(3rem, 15vw, 4.8rem) !important; }
+  .sp-entry-title { font-size: clamp(1.6rem, 7.5vw, 2rem) !important; }
   .sp-entry-subtitle { font-size: 15px; line-height: 1.65; }
   .sp-entry-hero > div.relative.z-10 { padding-top: 32px !important; }
   .sp-entry-search { margin-top: 24px !important; border-radius: 20px !important; }

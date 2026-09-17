@@ -1,3 +1,5 @@
+import { Milk, Soup, Drumstick, Carrot, ShoppingBag, Egg, Croissant, Wheat, Package, type LucideIcon } from "lucide-react";
+
 export type Role = "customer" | "vendor" | "operations" | "admin";
 export type SubscriptionStatus = "active" | "paused" | "cancelled";
 export type FulfilmentStatus = "Scheduled" | "Confirmed" | "Preparing" | "Ready for pickup" | "Out for delivery" | "Completed" | "Delayed" | "Exception";
@@ -37,6 +39,23 @@ export const categories = [
   { name: "Bakery", emoji: "🥖", color: "#f8eadf" },
   { name: "Rice & staples", emoji: "🍚", color: "#eef0ef" },
 ];
+
+// A controlled vector-icon set instead of raw emoji: renders identically across
+// every OS/browser (emoji fonts vary — this matters once the app ships natively),
+// and gives each category its own colour so the marketplace reads as a designed
+// product rather than a placeholder grid.
+const CATEGORY_ICONS: Record<string, LucideIcon> = {
+  "Milk & dairy": Milk, "Home food": Soup, "Meat & fish": Drumstick, Vegetables: Carrot,
+  Groceries: ShoppingBag, Eggs: Egg, Bakery: Croissant, "Rice & staples": Wheat,
+};
+const CATEGORY_TINTS: Record<string, string> = {
+  "Milk & dairy": "#2f6fa8", "Home food": "#b1652f", "Meat & fish": "#b1484a", Vegetables: "#3f8f3f",
+  Groceries: "#7847b8", Eggs: "#a67c00", Bakery: "#8a5a34", "Rice & staples": "#5f6b63",
+};
+export function categoryVisual(category: string): { bg: string; fg: string; Icon: LucideIcon } {
+  const meta = categories.find((item) => item.name === category);
+  return { bg: meta?.color || "#f1f6e8", fg: CATEGORY_TINTS[category] || "#5f6b63", Icon: CATEGORY_ICONS[category] || Package };
+}
 
 export const plans: Plan[] = [
   { id:"p1", vendorId:"v1", name:"Farm-fresh milk every morning", category:"Milk & dairy", emoji:"🥛", description:"Pasteurised cow milk delivered in reusable glass bottles.", price:1860, unit:"1 litre/day", frequency:"Daily", rating:4.9, nextStart:"Tomorrow", delivery:true, pickup:true, slots:["06:00–07:00 AM","07:00–08:00 AM"], accent:"from-sky-100 to-blue-50" },
