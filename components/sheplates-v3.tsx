@@ -1046,6 +1046,23 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
     }
     return [...byVendor.values()].sort((a, b) => a.distanceKm - b.distanceKm);
   }, [serviceable, state.vendors, locationConfirmed, profile.latitude, profile.longitude]);
+  // "My food trail" — every vendor this customer has actually paid an order
+  // to, so the map can draw where their food has really come from and add
+  // up a real, growing "distance sourced" total (not a marketing estimate).
+  const trailVendors = useMemo(() => {
+    if (!locationConfirmed) return [];
+    const byVendor = new Map<string, { id: string; name: string; lat: number; lng: number; distanceKm: number; orderCount: number }>();
+    for (const order of state.orders) {
+      if (order.customerEmail !== session.email || order.payment !== "Paid") continue;
+      const vendor = state.vendors.find((v) => v.id === order.vendorId);
+      if (!vendor || !Number.isFinite(vendor.latitude) || !Number.isFinite(vendor.longitude)) continue;
+      const distance = distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude) ?? 0;
+      const existing = byVendor.get(vendor.id);
+      if (existing) existing.orderCount += 1;
+      else byVendor.set(vendor.id, { id: vendor.id, name: vendor.businessName, lat: vendor.latitude!, lng: vendor.longitude!, distanceKm: distance, orderCount: 1 });
+    }
+    return [...byVendor.values()];
+  }, [state.orders, state.vendors, session.email, locationConfirmed, profile.latitude, profile.longitude]);
   const filtered = serviceable.filter((product) => {
     const vendor = state.vendors.find((v) => v.id === product.vendorId)!;
     const text = `${product.name} ${product.category} ${vendor.businessName} ${product.dietaryTags.join(" ")}`.toLowerCase();
@@ -1109,6 +1126,7 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
             radiusKm={mapRadiusKm}
             onRadiusChange={setMapRadiusKm}
             onSelectVendor={(vendorId) => { setVendorFilter(vendorId); setMapOpen(false); requestAnimationFrame(() => document.querySelector('[data-tour="products"]')?.scrollIntoView({ behavior: "smooth", block: "start" })); }}
+            trails={trailVendors}
           />
           {!mapVendors.length && <p className="px-1 text-xs text-stone-500">No serviceable vendors have a saved map pin yet.</p>}
         </div>

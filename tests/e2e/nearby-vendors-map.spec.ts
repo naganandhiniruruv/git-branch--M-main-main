@@ -49,4 +49,27 @@ test.describe("Interactive nearby-vendors map", () => {
     await expect(grid).toBeVisible();
     await expect(grid.locator("article").first()).toBeVisible();
   });
+
+  test("'My food trail' toggles a stat panel summarising past orders (or the first-order empty state)", async ({ page }) => {
+    await loginAsCustomer(page);
+    await dismissTourIfOpen(page);
+
+    await page.getByRole("button", { name: "Map" }).click();
+    const map = page.locator(".sp-vendor-map");
+    await expect(map).toBeVisible({ timeout: 10_000 });
+
+    const trailToggle = page.getByRole("button", { name: "My food trail" });
+    await expect(trailToggle).toBeVisible();
+    await trailToggle.click();
+
+    // Whichever demo account state this runs against, exactly one of these
+    // two panels must render — never neither, never both.
+    const hasOrders = page.getByText(/km sourced so far/);
+    const noOrdersYet = page.getByText(/first paid order will start a food trail/);
+    await expect(hasOrders.or(noOrdersYet)).toBeVisible({ timeout: 5000 });
+
+    await trailToggle.click();
+    await expect(hasOrders).not.toBeVisible();
+    await expect(noOrdersYet).not.toBeVisible();
+  });
 });
