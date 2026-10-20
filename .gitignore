@@ -51,3 +51,6 @@ next-env.d.ts
 
 # keep the example env (no secrets)
 !.env.example
+
+# local tooling
+/.claude/
