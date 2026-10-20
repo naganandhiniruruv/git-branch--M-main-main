@@ -135,11 +135,15 @@ export async function resetTourCompletion(email: string) {
  * login), so a test can interact with the underlying page without the
  * coach-mark overlay intercepting clicks. */
 export async function dismissTourIfOpen(page: Page) {
-  const skip = page.getByRole("button", { name: "Skip" });
+  // Scoped to the tour dialog with an exact name: a bare /Skip/ also matches
+  // the taste-setup dialog's "Skip taste setup" button and throws a strict-mode
+  // violation that would silently leave the tour overlay up.
+  const tour = page.getByRole("dialog", { name: "Product tour" });
+  const skip = tour.getByRole("button", { name: "Skip", exact: true });
   try {
-    await skip.waitFor({ state: "visible", timeout: 8000 });
+    await skip.waitFor({ state: "visible", timeout: 12_000 });
     await skip.click();
-    await skip.waitFor({ state: "hidden", timeout: 5000 });
+    await tour.waitFor({ state: "hidden", timeout: 5000 });
   } catch {
     // Tour never appeared (already dismissed for this user) — nothing to do.
   }

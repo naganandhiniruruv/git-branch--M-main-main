@@ -14,9 +14,10 @@ import {
   WalletCards, X, MapPinned, TicketCheck, ShoppingCart, Building2, ImageUp,
   FileSpreadsheet, Download, CreditCard, UserCog, CheckCircle2, Lightbulb, Eye, EyeOff, Copy,
   ChevronDown, Filter, Megaphone, Star, Flame, CircleUserRound, Pencil, Trash2, FileUp, Volume2, Clock3, HelpCircle,
-  Heart, MessagesSquare,
+  Heart, MessagesSquare, ThumbsUp, ThumbsDown, SlidersHorizontal, Zap, Timer, Clapperboard,
 } from "lucide-react";
 import { downloadWorkbook } from "@/lib/excel-export";
+import { MARKET_GROUPS } from "@/lib/market-groups";
 import { createStaffUser } from "@/lib/supabase";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -29,26 +30,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { ShePlatesEntry } from "@/components/sheplates-entry";
-import type { NearbyVendorsMap as NearbyVendorsMapComponent, MapVendor } from "@/components/nearby-vendors-map";
 import { VendorQrCode } from "@/components/vendor-qr-code";
 
-type NearbyVendorsMapProps = React.ComponentProps<typeof NearbyVendorsMapComponent>;
-
-// Leaflet touches `window` at module-evaluation time, which breaks this
-// RSC-style app's server-rendered first pass of "use client" components.
-// next/dynamic's ssr:false isn't reliably supported by vinext's shim (it
-// broke React's hook dispatcher entirely), so this loads the module by hand
-// inside useEffect — guaranteed client-only, framework-agnostic.
-function NearbyVendorsMap(props: NearbyVendorsMapProps) {
-  const [Component, setComponent] = useState<typeof NearbyVendorsMapComponent | null>(null);
-  useEffect(() => {
-    let alive = true;
-    import("@/components/nearby-vendors-map").then((mod) => { if (alive) setComponent(() => mod.NearbyVendorsMap); });
-    return () => { alive = false; };
-  }, []);
-  if (!Component) return <div className="grid h-[420px] place-items-center rounded-[26px] border border-stone-200/70 bg-stone-50 text-sm text-stone-400">Loading map…</div>;
-  return <Component {...props} />;
-}
 import { categories, categoryVisual } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
 import { nutritionLooksConsistent, type Nutrition } from "@/lib/nutrition";
@@ -57,9 +40,36 @@ import {
   loadLiveCustomerPreference, loadLiveCustomerMemory, clearLiveCustomerMemory, loadLiveMarketplace, loadLiveOperationsWorkspace, loadLiveVendorWorkspace, loadLiveCommerceSnapshot,
   loadLiveNotifications, markLiveNotificationsRead, saveLiveCustomerProfile,
   liveSignOut, saveLiveCustomerLocation, saveLiveVendorLocation, saveLiveVendorProduct,
-  saveLiveMarketplaceHome, saveLiveCampaign, uploadLiveProductImage, submitLiveVendorApplication, updateLiveVendorControls, saveLiveVendorPlan, createLiveScheduledCheckout, syncLiveCart, checkoutLiveCart, markLiveOrderPaid, saveLiveDeliveryStaff, deleteLiveDeliveryStaff, assignLiveDeliveryStaff, resubmitLiveVendorVerification, saveLiveOutletCertificate, uploadLiveCertificate, updateLiveOrderStatus, rescheduleLiveOrder, notifyLiveNutritionReview, saveLiveTourCompleted,
+  saveLiveMarketplaceHome, saveLiveCampaign, deleteLiveCampaign, uploadLiveProductImage, submitLiveVendorApplication, updateLiveVendorControls, saveLiveVendorPlan, createLiveScheduledCheckout, syncLiveCart, checkoutLiveCart, markLiveOrderPaid, saveLiveDeliveryStaff, deleteLiveDeliveryStaff, assignLiveDeliveryStaff, resubmitLiveVendorVerification, saveLiveOutletCertificate, uploadLiveCertificate, updateLiveOrderStatus, rescheduleLiveOrder, notifyLiveNutritionReview, saveLiveTourCompleted,
+  loadLiveTasteProfile, saveLiveTasteProfile, recordLiveTasteFeedback, fetchLiveFoodAttributes,
+  loadLiveFoodDrops, loadLiveVendorFoodDrops, createLiveFoodDrop, cancelLiveFoodDrop, claimLiveFoodDrop, loadLiveFoodDropClaims,
   type LiveMarketplaceRow, type LiveMenuItemRow, type LiveVendorRow, type MarketplaceDiagnostics,
 } from "@/lib/supabase";
+import {
+  TASTE_SETUP_CHOICES, TASTE_DIMENSION_LABELS, tasteMatchScore, applyTasteSignal, weightsFromSetupChoices, inferAttributesLocally,
+  type TasteWeights, type TasteSignal,
+} from "@/lib/taste-match";
+import {
+  dropDisplayStatus, discountPercent, claimedPercent, formatCountdown,
+  type FoodDrop, type FoodDropClaim,
+} from "@/lib/food-drops";
+import { useSocial } from "@/lib/social";
+import { groupMatches } from "@/lib/market-groups";
+import { CustomerBottomNav, CustomerTopNav, tabOf } from "@/components/customer-v2/shell";
+import { CategoryGrid, FoodDropsTab, MapsTab, PromoBanner, SchedulesTab, VendorRow } from "@/components/customer-v2/discover";
+import { StoriesTab } from "@/components/customer-v2/stories";
+import { ShortsRail, ShortsViewer, useShortsViewer } from "@/components/customer-v2/shorts";
+import { VendorShortsManager } from "@/components/vendor/shorts-manager";
+import { LiveCustomerRfqs, LiveRfqDesk, LiveVendorRfqs } from "@/components/rfq/live-rfq";
+import { publishRequirement } from "@/lib/rfq";
+import { CampaignBanner } from "@/components/customer-v2/campaigns";
+import { CampaignManager } from "@/components/admin/campaign-manager";
+import { recordCampaignEvent, useCampaignViewCounter, useCustomerCampaigns, type CampaignRecord, type LiveCampaign } from "@/lib/campaigns";
+import { usePeople } from "@/lib/people";
+import { useStatuses } from "@/lib/statuses";
+import { useFoodShorts, type FoodShort, type ShortsApi } from "@/lib/food-shorts";
+import { ProfileTab, VendorProfileDialog } from "@/components/customer-v2/profile";
+import { shortArea } from "@/components/customer-v2/kit";
 
 function CategoryBadge({ name, className = "size-5" }: { name: string; className?: string }) {
   const { Icon, fg } = categoryVisual(name);
@@ -73,7 +83,7 @@ function ProductGlyph({ category, iconClassName = "size-6" }: { category: string
 type Role = DemoSession["role"];
 type DeliveryMode = "Vendor delivery" | "Self pickup";
 type Verification = "Draft" | "Submitted" | "Under review" | "Changes required" | "Verified" | "Rejected";
-type Product = {
+export type Product = {
   id: string; vendorId: string; name: string; category: string; emoji: string; baseUnit: string;
   quantityStep: number; vendorPrice: number; stock: number; active: boolean; calories: number;
   protein: number; carbs: number; fat: number; fibre: number; dietaryTags: string[];
@@ -81,14 +91,37 @@ type Product = {
   nutritionStatus?: "Verified" | "Estimated" | "Pending review"; nutritionConfidence?: number; nutritionNote?: string;
 };
 type AgentMemory = { lastBudget?: number; favoriteCategories?: string[]; lastComplaintAt?: string; calorieTarget?: number; minProtein?: number; preferredDietaryTags?: string[]; preferredDeliveryPeriod?: string; favoriteProducts?: string[] };
-type AgentMessage = { role: "user" | "agent"; text: string; productIds?: string[]; basketTotal?: number; intent?: string };
+type AgentMessage = { role: "user" | "agent"; text: string; productIds?: string[]; basketTotal?: number; intent?: string; streaming?: boolean };
+
+/** Reads She Agent's event stream: "reply" events carry the words written so far, the last event is the validated result. */
+async function readAgentStream(response: Response, onReply: (replySoFar: string) => void): Promise<{ result?: Record<string, unknown>; error?: string }> {
+  const reader = response.body!.getReader(); const decoder = new TextDecoder();
+  let buffer = ""; let outcome: { result?: Record<string, unknown>; error?: string } = { error: "She Agent stopped before answering. Please try again." };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut: number;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const line = buffer.slice(0, cut).split("\n").find((l) => l.startsWith("data:")); buffer = buffer.slice(cut + 2);
+      if (!line) continue;
+      try {
+        const event = JSON.parse(line.slice(5).trim()) as { type?: string; text?: string; result?: Record<string, unknown>; error?: string };
+        if (event.type === "reply" && event.text) onReply(event.text);
+        else if (event.type === "result" && event.result) outcome = { result: event.result };
+        else if (event.type === "error") outcome = { error: event.error || "She Agent couldn't complete that request just now." };
+      } catch { /* ignore a malformed event */ }
+    }
+  }
+  return outcome;
+}
 type CustomerProfile = {
   email: string; address: string; latitude?: number; longitude?: number; householdSize: number;
   diet: string; allergies: string[]; goals: string[]; dislikes: string; onboardingComplete: boolean;
   phone?: string; addresses?: CustomerAddress[]; agentMemory?: AgentMemory;
 };
 type CustomerAddress = { id: string; label: string; address: string; latitude?: number; longitude?: number; phone?: string; isDefault: boolean };
-type Vendor = {
+export type Vendor = {
   id: string; ownerEmail: string; ownerName: string; businessName: string; category: string;
   address: string; latitude?: number; longitude?: number; radiusKm: number; delivery: boolean;
   pickup: boolean; openToday: boolean; fssaiNumber: string; certificateName: string; expiryDate: string;
@@ -126,12 +159,13 @@ type Transaction = {
   collectedAt: string; scheduledPayoutDate: string; payoutStatus: PayoutStatus; paidAt?: string; note?: string;
 };
 type StaffAccount = { id: string; email: string; name: string; role: "operations" | "admin"; createdBy: string; createdAt: string; mode: "live" | "local"; active: boolean };
-type Campaign = { id: string; name: string; audience: string; offer: string; channel: string; status: "Draft" | "Active" | "Paused"; aiRationale: string; createdAt: string };
+export type Campaign = CampaignRecord;
 type MerchandisingConfig = { featuredProductIds: string[]; recommendationPopupEnabled: boolean; maxFeatured: number };
 type WishlistItem = { customerEmail: string; productId: string; addedAt: string };
 type Review = { id: string; productId: string; vendorId: string; customerEmail: string; customerName: string; rating: number; comment: string; createdAt: string };
+type TasteProfileRow = { customerEmail: string; weights: TasteWeights; onboarded: boolean };
 
-type V3State = {
+export type V3State = {
   customers: CustomerProfile[]; vendors: Vendor[]; products: Product[]; schedules: Schedule[];
   orders: Order[]; staff: Staff[]; assignments: Assignment[]; requirements: Requirement[];
   quotes: Quote[]; markups: Record<string, number>; notifications: Notification[];
@@ -139,13 +173,16 @@ type V3State = {
   cart: CartItem[]; tickets: Ticket[]; transactions: Transaction[]; staffAccounts: StaffAccount[];
   campaigns: Campaign[]; merchandising: MerchandisingConfig; merchandisingError?: string | null;
   wishlist: WishlistItem[]; reviews: Review[];
+  tasteProfiles: TasteProfileRow[]; productAttributes: Record<string, TasteWeights>;
+  foodDrops: FoodDrop[]; foodDropClaims: FoodDropClaim[];
 };
 
 const EMPTY_STATE: V3State = {
   customers: [], vendors: [], products: [], schedules: [], orders: [], staff: [], assignments: [],
   requirements: [], quotes: [], markups: {}, notifications: [], cancellations: [], audit: [], cart: [], tickets: [],
   transactions: [], staffAccounts: [], campaigns: [], merchandising: { featuredProductIds: [], recommendationPopupEnabled: true, maxFeatured: 6 },
-  wishlist: [], reviews: [],
+  wishlist: [], reviews: [], tasteProfiles: [], productAttributes: {},
+  foodDrops: [], foodDropClaims: [],
 };
 
 const REVIEW_COMMENT_BANK = [
@@ -199,6 +236,80 @@ function StarRow({ value, size = "size-3.5" }: { value: number; size?: string })
     <Star key={n} className={`${size} ${n <= Math.round(value) ? "fill-[#e3a008] text-[#e3a008]" : "fill-stone-200 text-stone-200"}`} />
   ))}</span>;
 }
+
+// --- Taste Match --------------------------------------------------------
+// The customer's own weight vector and every product's attribute vector are
+// kept in local V3State (so the feature is fully interactive this session
+// even before the V8_1 migration is applied) and mirrored to Supabase on a
+// best-effort basis — see loadLiveTasteProfile/saveLiveTasteProfile in
+// lib/supabase.ts. Once that migration lands, the same reads/writes start
+// reflecting a real, durable, access-controlled row automatically.
+function tasteProfileFor(state: V3State, email: string): TasteProfileRow {
+  return state.tasteProfiles.find((p) => p.customerEmail === email) || { customerEmail: email, weights: {}, onboarded: false };
+}
+function upsertTasteProfile(state: V3State, email: string, weights: TasteWeights, onboarded: boolean): V3State {
+  return { ...state, tasteProfiles: [{ customerEmail: email, weights, onboarded }, ...state.tasteProfiles.filter((p) => p.customerEmail !== email)] };
+}
+function attributesFor(state: V3State, product: Product): TasteWeights {
+  return state.productAttributes[product.id] || inferAttributesLocally(product.name, product.category);
+}
+/** Records a taste signal for one product: updates the customer's weight
+ * vector (locally, immediately) and mirrors both the feedback event and the
+ * resulting profile to Supabase in the background. */
+function recordTasteSignal(state: V3State, setState: React.Dispatch<React.SetStateAction<V3State>>, session: DemoSession, product: Product, signal: TasteSignal) {
+  const profile = tasteProfileFor(state, session.email);
+  const attributes = attributesFor(state, product);
+  const nextWeights = applyTasteSignal(profile.weights, attributes, signal);
+  setState((s) => upsertTasteProfile(s, session.email, nextWeights, profile.onboarded || Object.keys(nextWeights).length > 0));
+  if (session.userId) {
+    void recordLiveTasteFeedback(session.userId, product.id, signal);
+    void saveLiveTasteProfile(session.userId, nextWeights, true);
+  }
+}
+function TasteMatchBadge({ state, setState, session, product }: { state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; session: DemoSession; product: Product }) {
+  const [open, setOpen] = useState(false);
+  const profile = tasteProfileFor(state, session.email);
+  if (!Object.keys(profile.weights).length) return null;
+  const attributes = attributesFor(state, product);
+  const { score, contributions } = tasteMatchScore(profile.weights, attributes);
+  if (score < 30) return null;
+  const tone = score >= 80 ? "bg-[#eff7e5] text-[#477f00] border-[#c8e6ac]" : score >= 55 ? "bg-[#fdf3e2] text-[#8a5a00] border-[#f0d9a8]" : "bg-stone-100 text-stone-600 border-stone-200";
+  return <span className="relative inline-block">
+    <button type="button" onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-black ${tone}`}><Flame className="size-3" />{score}% Taste Match</button>
+    {open && <div className="absolute left-0 top-full z-30 mt-1.5 w-56 rounded-2xl border border-stone-200/80 bg-white p-3.5 text-left shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="text-xs font-black text-[#171917]">{score}% Taste Match</div>
+      {contributions.length ? <p className="mt-1.5 text-[11px] leading-5 text-stone-500">Because you like: <span className="font-bold text-stone-700">{contributions.slice(0, 3).map((c) => TASTE_DIMENSION_LABELS[c.dimension as keyof typeof TASTE_DIMENSION_LABELS] || c.dimension).join(" • ")}</span></p> : <p className="mt-1.5 text-[11px] text-stone-500">Based on your taste profile.</p>}
+      <div className="mt-2.5 flex gap-1.5">
+        <button type="button" onClick={() => { recordTasteSignal(state, setState, session, product, "more_like_this"); toast.success("We'll show you more like this"); setOpen(false); }} className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-[#eff7e5] px-2 py-1.5 text-[11px] font-black text-[#477f00]"><ThumbsUp className="size-3" />More like this</button>
+        <button type="button" onClick={() => { recordTasteSignal(state, setState, session, product, "less_like_this"); toast.success("Got it — we'll show less like this"); setOpen(false); }} className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-stone-100 px-2 py-1.5 text-[11px] font-black text-stone-600"><ThumbsDown className="size-3" />Less like this</button>
+      </div>
+    </div>}
+  </span>;
+}
+/** Shown once per un-onboarded customer at the top of Marketplace. Skipping
+ * still marks the profile onboarded (with whatever weights already exist)
+ * so the banner doesn't reappear — Taste Match then keeps learning purely
+ * from view/save/order signals instead. */
+function TasteOnboardingBanner({ state, setState, session }: { state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; session: DemoSession }) {
+  const profile = tasteProfileFor(state, session.email);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [dismissed, setDismissed] = useState(false);
+  if (profile.onboarded || dismissed) return null;
+  function toggle(dimension: string) { setSelected((list) => list.includes(dimension) ? list.filter((x) => x !== dimension) : [...list, dimension]); }
+  function finish(skip: boolean) {
+    const weights = skip ? profile.weights : weightsFromSetupChoices(selected);
+    setState((s) => upsertTasteProfile(s, session.email, weights, true));
+    if (session.userId) void saveLiveTasteProfile(session.userId, weights, true);
+    setDismissed(true);
+    if (!skip) toast.success("Thanks — Taste Match is now personalizing your marketplace");
+  }
+  return <section className="sp-ai-card relative overflow-hidden rounded-[30px] p-5 sm:p-6">
+    <button onClick={() => finish(true)} className="absolute right-4 top-4 grid size-9 place-items-center rounded-full bg-stone-100" aria-label="Skip taste setup"><X className="size-4" /></button>
+    <div className="pr-12"><div className="flex items-center gap-2 text-xs font-black uppercase tracking-[.16em] text-[#5f8f2d]"><Flame className="size-4" />Taste Match</div><h2 className="mt-2 text-lg font-black tracking-[-.02em]">What tastes like you?</h2><p className="mt-1 max-w-3xl text-sm text-stone-500">Pick a few things you enjoy — we'll show a Taste Match % on products and learn more from what you view, save and order.</p></div>
+    <div className="mt-5 flex flex-wrap gap-2">{TASTE_SETUP_CHOICES.map((dimension) => <button type="button" key={dimension} onClick={() => toggle(dimension)} className={`rounded-full border px-3 py-2 text-sm font-bold ${selected.includes(dimension) ? "border-[#ef3d3d] bg-[#fdeceb] text-[#ef3d3d]" : "bg-white text-stone-500"}`}>{TASTE_DIMENSION_LABELS[dimension]}</button>)}</div>
+    <div className="mt-4 flex flex-wrap gap-2"><Button onClick={() => finish(false)} disabled={!selected.length} className="rounded-xl bg-[#171914]"><Check />Continue</Button><Button variant="outline" onClick={() => finish(true)} className="rounded-xl">Skip for now</Button></div>
+  </section>;
+}
 const PLATFORM_COMMISSION_PERCENT = 8;
 const PAYOUT_CYCLE_DAYS = 7;
 const STAFF_KEY = "sheplates-v3-staff-accounts";
@@ -206,15 +317,15 @@ const STORE_KEY = "sheplates-v3-state";
 const SESSION_KEY = "sheplates-v3-session";
 const roleName: Record<Role, string> = { customer: "Customer", vendor: "Vendor", operations: "Operations", admin: "Super admin" };
 const nav: Record<Role, string[]> = {
-  customer: ["Marketplace", "Cart", "Wishlist", "My schedule", "Monthly requirement", "My quotations", "Orders", "Profile & food", "Ticket centre"],
-  vendor: ["Dashboard", "AI insights", "Online shop & POS", "Store & radius", "Verification", "Catalog", "Quote opportunities", "Orders", "Delivery team", "Settlements", "Ticket centre"],
+  customer: ["Marketplace", "Maps", "Schedules", "Food Drops", "Stories", "Profile", "Cart", "Wishlist", "My schedule", "Monthly requirement", "My quotations", "Orders", "Profile & food", "Ticket centre"],
+  vendor: ["Dashboard", "AI insights", "Online shop & POS", "Store & radius", "Verification", "Catalog", "Food Drops", "Food Shorts", "Quote opportunities", "Orders", "Delivery team", "Settlements", "Ticket centre"],
   operations: ["Command centre", "AI insights", "Vendor onboarding", "Vendor verification", "Item pricing", "RFQ desk", "Orders", "Cancellations", "Vendor payments", "Reports", "Ticket centre"],
   admin: ["Executive view", "AI insights", "Homepage & campaigns", "Users", "Vendors", "Vendor plans", "Pricing policies", "Vendor payments", "Reports", "Ticket centre", "Audit log"],
 };
 const navIcons: Record<string, typeof Store> = {
   Marketplace: ShoppingBag, Cart: ShoppingCart, Wishlist: Heart, "My schedule": CalendarDays, "Monthly requirement": ListChecks, "My quotations": ClipboardCheck,
   Orders: Package, "Profile & food": HeartPulse, Dashboard: LayoutDashboard, "Store & radius": MapPin,
-  Verification: BadgeCheck, Catalog: ShoppingBag, "Online shop & POS": Building2, "Quote opportunities": ClipboardCheck, "Delivery team": Truck,
+  Verification: BadgeCheck, Catalog: ShoppingBag, "Online shop & POS": Building2, "Food Drops": Zap, "Food Shorts": Clapperboard, "Quote opportunities": ClipboardCheck, "Delivery team": Truck,
   "Command centre": LayoutDashboard, "Vendor onboarding": UserPlus, "Vendor verification": FileCheck2,
   "Item pricing": Percent, "RFQ desk": ClipboardCheck, Cancellations: RefreshCcw, "Executive view": LayoutDashboard,
   Users, Vendors: Store, "Vendor plans": WalletCards, "Pricing policies": Settings, "Audit log": Activity, "Ticket centre": TicketCheck, "AI insights": Sparkles, "Homepage & campaigns": Megaphone,
@@ -532,6 +643,36 @@ export function ShePlatesV3() {
   const [syncVersion, setSyncVersion] = useState(0);
   const [tourOpen, setTourOpen] = useState<null | "customer" | "vendor">(null);
   const lastAlertedNotification = useRef<string>("");
+  const [vendorProfileId, setVendorProfileId] = useState<string | null>(null);
+  const [locationSignal, setLocationSignal] = useState(0);
+  const [planProduct, setPlanProduct] = useState<Product | null>(null);
+  const social = useSocial({ email: session?.role === "customer" ? session.email : "", name: session?.name ?? "", userId: session?.userId }, state.vendors, state.products);
+  // Food Shorts: vendors post, customers see them by distance (the rule lives in lib/food-shorts-rules.ts and the database)
+  const shortsVendor = session?.role === "vendor" ? state.vendors.find((v) => v.ownerEmail === session.email) : undefined;
+  const shortsViewerCustomer = session?.role === "customer" ? state.customers.find((c) => c.email === session.email) : undefined;
+  const shorts = useFoodShorts({ email: session?.email ?? "", name: session?.name ?? "", userId: session?.userId, role: session?.role, vendorId: shortsVendor?.id }, state.vendors, { latitude: shortsViewerCustomer?.latitude, longitude: shortsViewerCustomer?.longitude });
+  const shortsViewer = useShortsViewer();
+  // People and statuses: follow customers, find them by handle or on the map, share 24-hour view-once statuses
+  const peopleUser = { email: session?.role === "customer" ? session.email : "", name: session?.name ?? "", userId: session?.userId, role: session?.role, handle: social.profile.handle, bio: social.profile.bio };
+  const people = usePeople(peopleUser, { latitude: shortsViewerCustomer?.latitude, longitude: shortsViewerCustomer?.longitude });
+  const [peopleRadius, setPeopleRadiusState] = useState(() => { try { const n = Number(localStorage.getItem("sheplates-people-radius")); return n >= 1 && n <= 30 ? n : 5; } catch { return 5; } });
+  const setPeopleRadius = (km: number) => { setPeopleRadiusState(km); try { localStorage.setItem("sheplates-people-radius", String(km)); } catch { /* ignore */ } };
+  const statuses = useStatuses(peopleUser, people, peopleRadius, state.vendors);
+  const [shortsRadius, setShortsRadiusState] = useState(() => { try { const n = Number(localStorage.getItem("sheplates-shorts-radius")); return n >= 1 && n <= 30 ? n : 5; } catch { return 5; } });
+  const setShortsRadius = (km: number) => { setShortsRadiusState(km); try { localStorage.setItem("sheplates-shorts-radius", String(km)); } catch { /* ignore */ } };
+  const openShorts = (list: FoodShort[], index: number) => { if (list.length) shortsViewer.open(list, index); };
+  function refreshDrops() {
+    return loadLiveFoodDrops().then((remote) => { if (remote) setState((current) => ({ ...current, foodDrops: remote })); }).catch(() => undefined);
+  }
+
+  // The crimson customer design is scoped to signed-in customers; every other
+  // portal (and the logged-out landing page) keeps the original green brand.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("theme-customer", session?.role === "customer");
+    return () => root.classList.remove("theme-customer");
+  }, [session?.role]);
+  useEffect(() => { if (session?.role === "customer") void refreshDrops(); }, [session?.role, session?.email]);
 
   useEffect(() => {
     if (!hydrated || !session) return;
@@ -658,7 +799,12 @@ export function ShePlatesV3() {
           products: workspace.products.map(productFromLive),
           merchandising: workspace.merchandising || current.merchandising,
           merchandisingError: workspace.merchandisingError || null,
-          campaigns: (workspace.campaigns || []).map((row: { id: string; name: string; audience: string; offer: string; channel: string; status: string; ai_rationale?: string; created_at: string }) => ({ id: row.id, name: row.name, audience: row.audience, offer: row.offer, channel: row.channel, status: row.status === "active" ? "Active" : row.status === "paused" ? "Paused" : "Draft", aiRationale: row.ai_rationale || "", createdAt: row.created_at })),
+          campaigns: (workspace.campaigns || []).map((row: Record<string, unknown>) => ({
+            id: String(row.id), name: String(row.name), audience: String(row.audience), offer: String(row.offer), channel: String(row.channel), status: row.status === "active" ? "Active" : row.status === "paused" ? "Paused" : "Draft", aiRationale: String(row.ai_rationale || ""), createdAt: String(row.created_at),
+            headline: (row.headline as string | null) || undefined, subline: (row.subline as string | null) || undefined, emoji: (row.emoji as string | null) || undefined, ctaLabel: (row.cta_label as string | null) || undefined,
+            targetType: (row.target_type as Campaign["targetType"]) || undefined, targetValue: (row.target_value as string | null) || undefined, segment: (row.segment as Campaign["segment"]) || undefined,
+            startsAt: (row.starts_at as string | null) || undefined, endsAt: (row.ends_at as string | null) || undefined, priority: Number(row.priority ?? 0), views: Number(row.view_count ?? 0), clicks: Number(row.click_count ?? 0),
+          } satisfies Campaign)),
         }));
       }
       const commerce = await loadLiveCommerceSnapshot();
@@ -697,10 +843,34 @@ export function ShePlatesV3() {
   if (role === "vendor" && !vendor) return <VendorOnboarding session={session} setState={setState} onLogout={signOut} />;
 
   const unread = state.notifications.filter((item) => notificationBelongsToSession(item, session) && !item.read).length;
+  const hasPin = Boolean(customer && Number.isFinite(customer.latitude) && Number.isFinite(customer.longitude));
+  async function claimDrop(drop: FoodDrop, quantity: number) {
+    try {
+      const claim = await claimLiveFoodDrop(drop.id, quantity);
+      setState((current) => ({
+        ...current,
+        foodDrops: current.foodDrops.map((d) => d.id === drop.id ? { ...d, remainingQuantity: Math.max(0, d.remainingQuantity - quantity) } : d),
+        foodDropClaims: [{ ...claim, customerEmail: session!.email }, ...current.foodDropClaims],
+      }));
+      toast.success(`Added ${quantity} × ${drop.title} — settle at pickup/delivery with the vendor`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "This drop could not be claimed");
+      void refreshDrops(); // the server decided (sold out / ended) — resync instead of trusting local stock
+    }
+  }
+  function renderCustomerPage() {
+    const area = { latitude: customer?.latitude, longitude: customer?.longitude, address: customer?.address };
+    if (active === "Maps") return <MapsTab state={state} profile={area} social={social} shorts={shorts} people={people} peopleRadius={peopleRadius} onPeopleRadius={setPeopleRadius} onOpenShorts={openShorts} locationConfirmed={hasPin} onOpenVendor={setVendorProfileId} onConfirmLocation={() => setActive("Marketplace")} />;
+    if (active === "Food Drops") return <FoodDropsTab state={state} profile={area} social={social} onClaim={claimDrop} onRefresh={() => void refreshDrops()} />;
+    if (active === "Stories") return <StoriesTab state={state} social={social} shorts={shorts} people={people} statuses={statuses} peopleRadius={peopleRadius} onPeopleRadius={setPeopleRadius} shortsRadius={shortsRadius} onShortsRadius={setShortsRadius} onOpenShorts={openShorts} hasPin={hasPin} onSetLocation={() => setActive("Marketplace")} userName={session!.name} onOpenVendor={setVendorProfileId} />;
+    if (active === "Profile") return <ProfileTab session={session!} state={state} social={social} people={people} statuses={statuses} onSetLocation={() => setActive("Marketplace")} onNavigate={setActive} onReplayTour={replayTour} onSignOut={signOut} />;
+    if (active === "Schedules" || active === "Orders" || active === "My schedule") return <SchedulesTab initial={active === "My schedule" ? "Subscriptions" : "Orders"} orders={<OrdersV4 session={session!} state={state} setState={setState} scope="customer" />} subscriptions={<SchedulesV4 session={session!} state={state} setState={setState} navigate={setActive} />} />;
+    return <CustomerArea active={active} session={session!} state={state} setState={setState} navigate={setActive} openAgent={() => setAgentOpen(true)} openVendor={setVendorProfileId} locationSignal={locationSignal} shorts={shorts} shortsRadius={shortsRadius} onShortsRadius={setShortsRadius} openShorts={openShorts} onSeeAllShorts={() => setActive("Stories")} />;
+  }
   const content = role === "customer"
-    ? <CustomerArea active={active} session={session} state={state} setState={setState} navigate={setActive} openAgent={() => setAgentOpen(true)} />
+    ? renderCustomerPage()
     : role === "vendor"
-      ? <VendorArea active={active} session={session} state={state} setState={setState} />
+      ? <VendorArea active={active} session={session} state={state} setState={setState} shorts={shorts} />
       : role === "operations"
         ? <OperationsArea active={active} session={session} state={state} setState={setState} />
         : <AdminArea active={active} session={session} state={state} setState={setState} />;
@@ -716,39 +886,38 @@ export function ShePlatesV3() {
     <header className="glass sp-app-header sticky top-0 z-40 border-b border-white/70">
       <div className="mx-auto flex h-[78px] max-w-[1700px] items-center gap-3 px-4 lg:px-7">
         {role !== "customer" && <button className="grid size-10 place-items-center rounded-full border border-stone-200/70 bg-white/80 shadow-sm" onClick={() => { setSidebarCollapsed(false); setMenuOpen((v) => !v); }} aria-label="Toggle navigation"><Menu className="size-5" /></button>}
-        <Logo />
-        {role === "customer" ? <div className="relative ml-1 hidden sm:block">
-          <button data-tour="account" onClick={() => setCustomerMenuOpen((value) => !value)} className="flex items-center gap-2 rounded-2xl px-2.5 py-2 text-left transition hover:bg-white/70">
-            <div className="grid size-9 place-items-center rounded-full bg-[#171914] text-xs font-black text-white">{session.name.slice(0, 2).toUpperCase()}</div>
-            <div className="hidden max-w-44 sm:block"><div className="truncate text-sm font-black">{session.name}</div><div className="truncate text-[11px] text-stone-500">Account & preferences</div></div>
-            <ChevronDown className={`size-4 text-stone-500 transition ${customerMenuOpen ? "rotate-180" : ""}`} />
-          </button>
-          {customerMenuOpen && <div className="surface-card absolute left-0 top-[58px] z-50 w-72 rounded-[24px] p-2 shadow-2xl">
-            <div className="rounded-2xl bg-[#f6f3ed] p-3"><div className="font-black">{session.name}</div><div className="truncate text-xs text-stone-500">{session.email}</div></div>
-            <div className="mt-2 space-y-1">
-              {[
-                ["Profile & food", HeartPulse],
-                ["Wishlist", Heart],
-                ["Orders", Package],
-                ["My schedule", CalendarDays],
-                ["Monthly requirement", ListChecks],
-                ["Ticket centre", TicketCheck],
-              ].map(([label, Icon]) => <button key={String(label)} onClick={() => { setActive(String(label)); setCustomerMenuOpen(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold hover:bg-stone-50"><Icon className="size-4 text-stone-500" />{String(label)}</button>)}
-              <button onClick={() => { replayTour(); setCustomerMenuOpen(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold hover:bg-stone-50"><HelpCircle className="size-4 text-stone-500" />Help · Product tour</button>
-              <button onClick={signOut} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50"><LogOut className="size-4" />Sign out</button>
-            </div>
-          </div>}
-        </div> : null}
+        {role === "customer" ? <><span className="md:hidden"><Logo compact /></span><span className="hidden md:block"><Logo /></span></> : <Logo />}
+        {role === "customer" && <>
+          <CustomerTopNav active={active} onNavigate={(key) => { setActive(key); setCustomerMenuOpen(false); }} />
+          <button type="button" data-tour="location-mobile" onClick={() => { setActive("Marketplace"); setLocationSignal((n) => n + 1); }} className="ml-1 flex min-w-0 max-w-[48vw] items-center gap-1 rounded-full bg-white/80 px-3 py-2 text-xs font-black shadow-sm md:hidden" aria-label="Delivery area"><MapPin className="size-3.5 shrink-0 text-[#e0194f]" /><span className="truncate">{shortArea(customer?.address)}</span><ChevronDown className="size-3 shrink-0 text-stone-400" /></button>
+        </>}
 
         <div className="ml-auto flex items-center gap-1.5">
           {role === "customer" ? <>
-            <button onClick={() => setNotificationsOpen(true)} className="relative grid size-10 place-items-center rounded-full border border-stone-200/70 bg-white/80 sm:hidden" aria-label="Notifications"><Bell className="size-[18px]" />{unread > 0 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#ef3d3d] px-1 text-[10px] font-black text-white">{unread}</span>}</button>
-            <span className="sp-desktop-customer-actions contents">
-            <button onClick={() => setActive("Marketplace")} className={`hidden rounded-xl px-3 py-2 text-sm font-black sm:block ${active === "Marketplace" ? "bg-[#eff6e6] text-[#50772a]" : "text-stone-500 hover:bg-white/70"}`}>Marketplace</button>
-            <button data-tour="quotations" onClick={() => setActive("My quotations")} className="relative grid size-11 place-items-center rounded-full border border-stone-200/70 bg-white/70 hover:bg-white" title="My quotations"><ClipboardCheck className="size-5" />{customerQuoteCount > 0 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#5f8f2d] px-1 text-[10px] font-black text-white">{customerQuoteCount}</span>}</button>
-            <button onClick={() => setNotificationsOpen(true)} className="relative grid size-11 place-items-center rounded-full border border-stone-200/70 bg-white/70 hover:bg-white" aria-label="Notifications"><Bell className="size-5" />{unread > 0 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#ef3d3d] px-1 text-[10px] font-black text-white">{unread}</span>}</button>
-            <button data-tour="cart" onClick={() => setActive("Cart")} className="relative grid size-11 place-items-center rounded-full bg-[#171914] text-white shadow-lg" title="Cart"><ShoppingCart className="size-5" />{customerCartCount > 0 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#ef3d3d] px-1 text-[10px] font-black text-white">{customerCartCount}</span>}</button>
-            </span>
+            <button onClick={() => setNotificationsOpen(true)} className="relative grid size-10 place-items-center rounded-full border border-stone-200/70 bg-white/80 hover:bg-white" aria-label="Notifications"><Bell className="size-[18px]" />{unread > 0 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#ef3d3d] px-1 text-[10px] font-black text-white">{unread}</span>}</button>
+            <button data-tour="cart" onClick={() => setActive("Cart")} className="relative grid size-10 place-items-center rounded-full bg-[#171914] text-white shadow-lg" title="Cart" aria-label="Cart"><ShoppingCart className="size-[18px]" />{customerCartCount > 0 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#ef3d3d] px-1 text-[10px] font-black text-white">{customerCartCount}</span>}</button>
+            <div className="relative ml-1 hidden md:block">
+              <button data-tour="account" onClick={() => setCustomerMenuOpen((value) => !value)} aria-label="Account menu" className="flex items-center gap-1.5 rounded-full p-1 pr-2 transition hover:bg-white/70">
+                <div className="grid size-9 place-items-center rounded-full bg-[#171914] text-xs font-black text-white">{session.name.slice(0, 2).toUpperCase()}</div>
+                <ChevronDown className={`size-4 text-stone-500 transition ${customerMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              {customerMenuOpen && <div className="surface-card absolute right-0 top-[52px] z-50 w-72 rounded-[24px] p-2 shadow-2xl">
+                <div className="rounded-2xl bg-[#f6f3ed] p-3"><div className="font-black">{session.name}</div><div className="truncate text-xs text-stone-500">{session.email}</div></div>
+                <div className="mt-2 space-y-1">
+                  {[
+                    ["Profile & food", HeartPulse],
+                    ["Wishlist", Heart],
+                    ["Orders", Package],
+                    ["My schedule", CalendarDays],
+                    ["Monthly requirement", ListChecks],
+                    ["My quotations", ClipboardCheck],
+                    ["Ticket centre", TicketCheck],
+                  ].map(([label, Icon]) => <button key={String(label)} onClick={() => { setActive(String(label)); setCustomerMenuOpen(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold hover:bg-stone-50"><Icon className="size-4 text-stone-500" />{String(label)}</button>)}
+                  <button onClick={() => { replayTour(); setCustomerMenuOpen(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold hover:bg-stone-50"><HelpCircle className="size-4 text-stone-500" />Help · Product tour</button>
+                  <button onClick={signOut} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50"><LogOut className="size-4" />Sign out</button>
+                </div>
+              </div>}
+            </div>
           </> : <>
             <RolePill>{roleName[role]}</RolePill>
             <button onClick={() => setNotificationsOpen(true)} className="relative grid size-11 place-items-center rounded-full hover:bg-stone-100" aria-label="Notifications"><Bell className="size-5" />{unread > 0 && <span className="absolute right-1 top-1 grid min-w-5 place-items-center rounded-full bg-[#ef3d3d] px-1 text-[10px] font-black text-white">{unread}</span>}</button>
@@ -759,23 +928,15 @@ export function ShePlatesV3() {
       </div>
     </header>
 
-    {role === "customer" ? <main className="sp-customer-main mx-auto min-w-0 max-w-[1540px] p-4 pb-28 sm:p-6 lg:p-8">
+    {role === "customer" ? <main className="sp-customer-main mx-auto min-w-0 max-w-[1540px] p-4 pb-28 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
       {isLiveSupabaseMode() && liveSync === "loading" && <div className="surface-card mb-4 flex items-center gap-3 rounded-2xl border border-sky-200/70 bg-sky-50/90 p-3 text-sm text-sky-900"><RefreshCcw className="size-4 animate-spin" /><span className="flex-1 font-bold">Refreshing your latest data…</span></div>}
       {isLiveSupabaseMode() && liveSync === "error" && <div className="surface-card mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-amber-200/70 bg-amber-50/90 p-3 text-sm text-amber-900"><AlertTriangle className="size-4" /><span className="min-w-0 flex-1"><b>Account sync paused.</b> {liveSyncError}</span><Button size="sm" variant="outline" onClick={() => setSyncVersion((value) => value + 1)} className="rounded-lg"><RefreshCcw />Retry</Button></div>}
       {content}
-      {!notificationsOpen && <nav className="sp-mobile-bottom-nav" aria-label="Customer navigation">
-        <button data-active={active === "Marketplace"} onClick={() => { setActive("Marketplace"); setCustomerMenuOpen(false); }}><ShoppingBag className="size-5" /><span>Explore</span></button>
-        <button data-tour="orders-mobile" data-active={active === "Orders"} onClick={() => { setActive("Orders"); setCustomerMenuOpen(false); }}><Package className="size-5" /><span>Orders</span></button>
-        <button data-tour="agent-mobile" className="sp-nav-agent" onClick={() => { setAgentOpen(true); setCustomerMenuOpen(false); }} aria-label="Open She Agent"><Activity className="size-6" /><span>She Agent</span></button>
-        <button data-tour="cart-mobile" data-active={active === "Cart"} className="relative" onClick={() => { setActive("Cart"); setCustomerMenuOpen(false); }}><ShoppingCart className="size-5" /><span>Cart</span>{customerCartCount > 0 && <span className="absolute right-2 top-1 grid min-w-4 place-items-center rounded-full bg-[#ff6248] px-1 text-[9px] font-black text-white">{customerCartCount}</span>}</button>
-        <button data-tour="account-mobile" data-active={customerMenuOpen || ["Profile & food","My schedule","Monthly requirement","My quotations","Ticket centre"].includes(active)} onClick={() => setCustomerMenuOpen((value) => !value)}><CircleUserRound className="size-5" /><span>Account</span></button>
-      </nav>}
-      {customerMenuOpen && <><button className="fixed inset-0 z-[56] bg-black/25 backdrop-blur-[2px] sm:hidden" onClick={() => setCustomerMenuOpen(false)} aria-label="Close account menu" /><section className="sp-account-sheet fixed inset-x-3 bottom-[88px] z-[57] rounded-[28px] border border-white/70 bg-white/96 p-3 shadow-[0_28px_90px_rgba(18,21,16,.24)] backdrop-blur-xl sm:hidden">
-        <div className="flex items-center gap-3 rounded-[22px] bg-[#f5f3ed] p-3"><div className="grid size-11 place-items-center rounded-2xl bg-[#171914] text-sm font-black text-white">{session.name.slice(0,2).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="truncate font-black">{session.name}</div><div className="truncate text-xs text-stone-500">{session.email}</div></div><button onClick={() => setCustomerMenuOpen(false)} className="grid size-9 place-items-center rounded-full bg-white"><X className="size-4" /></button></div>
-        <div className="mt-2 grid grid-cols-2 gap-2">{[["Profile & food",HeartPulse],["Wishlist",Heart],["My schedule",CalendarDays],["Monthly requirement",ListChecks],["My quotations",ClipboardCheck],["Ticket centre",TicketCheck]].map(([label,Icon]) => <button key={String(label)} onClick={() => { setActive(String(label)); setCustomerMenuOpen(false); }} className="flex min-h-14 items-center gap-2 rounded-2xl border border-stone-200/70 bg-white px-3 text-left text-xs font-black"><Icon className="size-4 text-[#5f8f2d]" />{String(label)}</button>)}</div>
-        <button onClick={() => { replayTour(); setCustomerMenuOpen(false); }} className="mt-2 flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl border border-stone-200/70 bg-white text-sm font-black text-stone-600"><HelpCircle className="size-4" />Help · Product tour</button>
-        <button onClick={signOut} className="mt-2 flex min-h-12 w-full items-center justify-center gap-2 rounded-2xl bg-red-50 text-sm font-black text-red-600"><LogOut className="size-4" />Sign out</button>
-      </section></>}
+      {!notificationsOpen && <CustomerBottomNav active={active} onNavigate={(key) => { setActive(key); setCustomerMenuOpen(false); }} onAgent={() => setAgentOpen(true)} />}
+      {customerMenuOpen && <button className="fixed inset-0 z-30 hidden md:block" onClick={() => setCustomerMenuOpen(false)} aria-label="Close account menu" />}
+      <VendorProfileDialog vendorId={vendorProfileId} onClose={() => setVendorProfileId(null)} state={state} social={social} profile={{ latitude: customer?.latitude, longitude: customer?.longitude, address: customer?.address }} onAdd={(product) => void addProductToCart(state, setState, session, product)} onPlan={(product) => setPlanProduct(product)} onClaimDrop={claimDrop} shorts={vendorProfileId ? shorts.forVendor(vendorProfileId, 30) : []} onOpenShorts={openShorts} />
+      {shortsViewer.state && <ShortsViewer shorts={shortsViewer.state.shorts} startIndex={shortsViewer.state.start} liked={shorts.liked} onLike={(id) => void shorts.toggleLike(id).catch((e) => toast.error(e instanceof Error ? e.message : "Could not save your like"))} onView={shorts.recordView} onOpenVendor={setVendorProfileId} onClose={shortsViewer.close} />}
+      <ScheduleDialog product={planProduct} close={() => setPlanProduct(null)} session={session} state={state} setState={setState} initialStartDate={tomorrow()} onCreated={() => { setVendorProfileId(null); setActive("Cart"); }} />
     </main> : <div className="mx-auto flex max-w-[1700px] gap-0 lg:gap-4">
       {menuOpen && <button className="sp-mobile-nav-overlay lg:hidden" onClick={() => setMenuOpen(false)} aria-label="Close navigation" />}
       <aside className={`${menuOpen ? "fixed inset-y-[78px] left-0 z-30 flex" : "hidden"} nav-shell sp-portal-sidebar ${sidebarCollapsed ? "w-24" : "w-72"} shrink-0 flex-col p-4 text-white lg:sticky lg:top-[94px] lg:m-4 lg:flex lg:h-[calc(100vh-110px)] lg:rounded-[30px] lg:border lg:border-white/8 transition-[width]`}>
@@ -784,7 +945,7 @@ export function ShePlatesV3() {
         <nav className="space-y-1.5">{nav[role].map((label) => { const Icon = navIcons[label] || Store; return <button key={label} data-tour-nav={label} title={sidebarCollapsed ? label : undefined} onClick={() => { setActive(label); setMenuOpen(false); }} className={`nav-item flex w-full items-center ${sidebarCollapsed ? "justify-center px-3" : "gap-3 px-4"} rounded-2xl py-3.5 text-left text-sm font-bold transition ${active === label ? "nav-item-active" : ""}`}><Icon className="size-[18px] shrink-0" />{!sidebarCollapsed && label}</button>; })}</nav>
         {role === "vendor" && <button onClick={replayTour} className={`nav-item mt-1.5 flex w-full items-center ${sidebarCollapsed ? "justify-center px-3" : "gap-3 px-4"} rounded-2xl py-3.5 text-left text-sm font-bold`} title={sidebarCollapsed ? "Help" : undefined}><HelpCircle className="size-[18px] shrink-0" />{!sidebarCollapsed && "Help · Product tour"}</button>}
       </aside>
-      <main className="sp-portal-main min-w-0 flex-1 p-4 pb-28 sm:p-6 lg:p-8 lg:pl-0">
+      <main className="sp-portal-main min-w-0 flex-1 p-4 pb-28 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28 lg:pl-0">
         {isLiveSupabaseMode() && liveSync === "loading" && <div className="surface-card mb-4 flex items-center gap-3 rounded-2xl border border-sky-200/70 bg-sky-50/90 p-3 text-sm text-sky-900"><RefreshCcw className="size-4 animate-spin" /><span className="flex-1 font-bold">Refreshing your latest data…</span></div>}
         {isLiveSupabaseMode() && liveSync === "error" && <div className="surface-card mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-amber-200/70 bg-amber-50/90 p-3 text-sm text-amber-900"><AlertTriangle className="size-4" /><span className="min-w-0 flex-1"><b>Account sync paused.</b> {liveSyncError}</span><Button size="sm" variant="outline" onClick={() => setSyncVersion((value) => value + 1)} className="rounded-lg"><RefreshCcw />Retry</Button></div>}
         {content}
@@ -803,7 +964,7 @@ export function ShePlatesV3() {
 }
 
 function audit(session: DemoSession, action: string, detail: string): Audit { return { id: id("AUD"), actor: `${session.name} · ${roleName[session.role]}`, action, detail, at: now() }; }
-function Logo() { return <div className="flex min-w-0 items-center gap-2.5 sm:gap-3"><div className="surface-card-muted grid size-10 shrink-0 place-items-center rounded-[14px] sm:size-12 sm:rounded-2xl"><img src="/sheplates-logo.png" alt="ShePlates" className="size-8 rounded-full object-contain sm:size-10" /></div><div className="min-w-0"><div className="truncate text-lg font-black tracking-[-.04em] sm:text-xl">ShePlates</div><div className="hidden text-[9px] font-black uppercase tracking-[.18em] text-[#5f8f2d] min-[390px]:block sm:text-[10px]">Agentic local commerce</div></div></div>; }
+function Logo({ compact = false }: { compact?: boolean }) { return <div className="flex min-w-0 items-center gap-2.5 sm:gap-3"><div className="surface-card-muted grid size-10 shrink-0 place-items-center rounded-[14px] sm:size-12 sm:rounded-2xl"><img src="/sheplates-logo.png" alt="ShePlates" className="size-8 rounded-full object-contain sm:size-10" /></div>{!compact && <div className="min-w-0"><div className="truncate text-lg font-black tracking-[-.04em] sm:text-xl">ShePlates</div><div className="hidden text-[9px] font-black uppercase tracking-[.18em] text-[#5f8f2d] min-[390px]:block sm:text-[10px]">Agentic local commerce</div></div>}</div>; }
 function RolePill({ children }: { children: React.ReactNode }) { return <span className="soft-chip hidden sm:inline-flex">{children}</span>; }
 
 type TourStep = { selectors: string[]; title: string; body: string };
@@ -812,16 +973,15 @@ const CUSTOMER_TOUR_KEY = "customer_v1";
 const VENDOR_TOUR_KEY = "vendor_v1";
 
 const CUSTOMER_TOUR_STEPS: TourStep[] = [
-  { selectors: ['[data-tour="location"]'], title: "Your delivery location", body: "Set your delivery pin here — by GPS or by typing an address. Every product you see is matched to this exact location, not just the text." },
+  { selectors: ['[data-tour="location"]', '[data-tour="location-mobile"]'], title: "Your delivery location", body: "Set your delivery pin here — by GPS or by typing an address. Every product you see is matched to this exact location, not just the text." },
   { selectors: ['[data-tour="search"]'], title: "Search the marketplace", body: "Look up a product, vendor, category or dietary tag directly." },
   { selectors: ['[data-tour="categories"]'], title: "Browse categories", body: "Jump straight to milk, home food, vegetables, groceries and more." },
   { selectors: ['[data-tour="filters"]'], title: "Filters", body: "Narrow by budget, calories, protein and dietary preference." },
   { selectors: ['[data-tour="products"]'], title: "Add to Cart or Schedule", body: "Every product has two independent actions: Add puts it straight in your cart; Plan opens a one-off or recurring delivery schedule for it." },
   { selectors: ['[data-tour="agent-desktop"]', '[data-tour="agent-mobile"]'], title: "She Agent", body: "Ask in plain language — \"add milk to my cart\" or \"what did I order last week\" — and She Agent uses the same cart and order history you see here." },
   { selectors: ['[data-tour="cart"]', '[data-tour="cart-mobile"]'], title: "Cart", body: "Your saved basket — it persists across refresh, logout and devices, and is shared with She Agent." },
-  { selectors: ['[data-tour="orders-mobile"]'], title: "Orders", body: "Track every order's status, from confirmed through to delivered." },
-  { selectors: ['[data-tour="quotations"]'], title: "My Quotations", body: "Compare sealed vendor quotes after you publish a monthly requirement." },
-  { selectors: ['[data-tour="account"]', '[data-tour="account-mobile"]'], title: "Profile & food, and more", body: "Your account menu holds Profile & Food, My Schedule, Monthly Requirement, My Quotations and Ticket Centre." },
+  { selectors: ['[data-tour="nav-tabs"]', '[data-tour="nav-tabs-mobile"]'], title: "Six tabs, one app", body: "Maps for vendors near you, Marketplace to shop, Schedules for orders and subscriptions, Food Drops for limited offers, Stories for what neighbours are eating, and your Profile." },
+  { selectors: ['[data-tour="account"]', '[data-tour="account-mobile"]'], title: "Profile & food, and more", body: "Your profile holds Profile & Food, Wishlist, Orders, My Quotations, Monthly Requirement and Ticket Centre." },
 ];
 
 const VENDOR_TOUR_STEPS: TourStep[] = [
@@ -967,22 +1127,53 @@ function MapPreview({ lat, lng, radius, label = "Selected location" }: { lat?: n
 }
 function ToggleCard({ icon: Icon, title, body, checked, setChecked }: { icon: typeof Store; title: string; body: string; checked: boolean; setChecked: (v: boolean) => void }) { return <div className={`rounded-2xl border p-5 ${checked ? "border-[#5ba400] bg-[#f4faed]" : "bg-white"}`}><div className="flex items-center justify-between"><Icon className="text-[#5ba400]" /><Switch checked={checked} onCheckedChange={setChecked} /></div><h3 className="mt-4 font-black">{title}</h3><p className="mt-2 text-sm text-stone-500">{body}</p></div>; }
 
-function CustomerArea({ active, session, state, setState, navigate, openAgent }: { active: string; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; navigate: (page: string) => void; openAgent: () => void }) {
+function CustomerArea({ active, session, state, setState, navigate, openAgent, openVendor, locationSignal, shorts, shortsRadius, onShortsRadius, openShorts, onSeeAllShorts }: { onSeeAllShorts: () => void; shorts: ShortsApi; shortsRadius: number; onShortsRadius: (km: number) => void; openShorts: (list: FoodShort[], index: number) => void; active: string; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; navigate: (page: string) => void; openAgent: () => void; openVendor: (vendorId: string) => void; locationSignal?: number }) {
   if (active === "Cart") return <CartView session={session} state={state} setState={setState} navigate={navigate} />;
   if (active === "My schedule") return <SchedulesV4 session={session} state={state} setState={setState} navigate={navigate} />;
   if (active === "Monthly requirement") return <RequirementsV4 session={session} state={state} setState={setState} />;
-  if (active === "My quotations") return <CustomerQuotesV4 session={session} state={state} setState={setState} />;
+  if (active === "My quotations") return isLiveSupabaseMode() ? <LiveCustomerRfqs /> : <CustomerQuotesV4 session={session} state={state} setState={setState} />;
   if (active === "Orders") return <OrdersV4 session={session} state={state} setState={setState} scope="customer" />;
   if (active === "Profile & food") return <CustomerProfileV4 session={session} state={state} setState={setState} />;
   if (active === "Ticket centre") return <TicketCentre session={session} state={state} setState={setState} />;
   if (active === "Wishlist") return <WishlistView session={session} state={state} setState={setState} />;
-  return <Marketplace session={session} state={state} setState={setState} navigate={navigate} openAgent={openAgent} />;
+  return <Marketplace session={session} state={state} setState={setState} navigate={navigate} openAgent={openAgent} openVendor={openVendor} locationSignal={locationSignal} shorts={shorts} shortsRadius={shortsRadius} openShorts={openShorts} onSeeAllShorts={onSeeAllShorts} />;
 }
 
-function Marketplace({ session, state, setState, navigate, openAgent }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; navigate: (page: string) => void; openAgent: () => void }) {
+/** Add one pack of a product to the signed-in customer's saved basket (optimistic locally, then synced). */
+async function addProductToCart(state: V3State, setState: React.Dispatch<React.SetStateAction<V3State>>, session: DemoSession, product: Product) {
+  const own = state.cart.filter((item) => item.customerEmail === session.email);
+  const existing = own.find((item) => item.productId === product.id);
+  const nextOwn = existing ? own.map((item) => item.id === existing.id ? { ...item, quantity: item.quantity + 1 } : item) : [{ id: id("CART"), customerEmail: session.email, productId: product.id, quantity: 1 }, ...own];
+  setState((current) => ({ ...current, cart: [...current.cart.filter((item) => item.customerEmail !== session.email), ...nextOwn] }));
+  recordTasteSignal(state, setState, session, product, "save");
+  try {
+    if (isLiveSupabaseMode()) {
+      const saved = await syncLiveCart({ items: nextOwn.map((item) => ({ productId: item.productId, quantity: item.quantity })) });
+      if (saved.snapshot) setState((current) => mergeLiveCommerce(current, saved.snapshot as LiveCommerceStateSnapshot, session));
+    }
+    toast.success(`${product.name} added to cart`);
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : "Cart could not be saved");
+    if (isLiveSupabaseMode()) { try { const snapshot = await loadLiveCommerceSnapshot(); setState((current) => mergeLiveCommerce(current, snapshot, session)); } catch {} }
+  }
+}
+
+function Marketplace({ session, state, setState, navigate, openAgent, openVendor, locationSignal = 0, shorts, shortsRadius, openShorts, onSeeAllShorts }: { onSeeAllShorts: () => void; shorts: ShortsApi; shortsRadius: number; openShorts: (list: FoodShort[], index: number) => void; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; navigate: (page: string) => void; openAgent: () => void; openVendor: (vendorId: string) => void; locationSignal?: number }) {
   const profile = state.customers.find((x) => x.email === session.email)!;
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
+  // Live campaigns set by the Super Admin: shown to this customer only when live and inside their audience
+  const hasOrdered = state.orders.some((o) => o.customerEmail === session.email);
+  const campaigns = useCustomerCampaigns(state.campaigns, hasOrdered);
+  const countCampaignView = useCampaignViewCounter();
+  const scrollToProducts = () => requestAnimationFrame(() => document.querySelector('[data-tour="products"]')?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  function runCampaign(campaign: LiveCampaign) {
+    recordCampaignEvent(campaign.id, "click");
+    if (campaign.targetType === "vendor" && campaign.targetValue) return openVendor(campaign.targetValue);
+    if (campaign.targetType === "category" && campaign.targetValue) { setCategory(campaign.targetValue); setQuery(""); }
+    else if (campaign.targetType === "product" && campaign.targetValue) { setCategory("All"); setQuery(state.products.find((p) => p.id === campaign.targetValue)?.name || ""); }
+    scrollToProducts();
+  }
   const [selected, setSelected] = useState<Product | null>(null);
   const [locationOpen, setLocationOpen] = useState(false);
   const [locating, setLocating] = useState(false);
@@ -1005,9 +1196,8 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   const [draftAddress, setDraftAddress] = useState(profile.address);
   const [draftCoords, setDraftCoords] = useState<{ lat?: number; lng?: number }>({ lat: profile.latitude, lng: profile.longitude });
   const locationConfirmed = Number.isFinite(profile.latitude) && Number.isFinite(profile.longitude);
-  const [mapOpen, setMapOpen] = useState(false);
-  const [mapRadiusKm, setMapRadiusKm] = useState(10);
   const [vendorFilter, setVendorFilter] = useState("");
+  useEffect(() => { if (locationSignal > 0) { setDraftAddress(profile.address); setDraftCoords({ lat: profile.latitude, lng: profile.longitude }); setLocationOpen(true); } }, [locationSignal]);
   const qrVendorHandled = useRef(false);
 
   // A vendor's QR code links to "<origin>/?vendor=<id>" (there is no path
@@ -1038,6 +1228,20 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
     if (additions.length) setState((s) => ({ ...s, reviews: [...s.reviews, ...additions] }));
   }, [state.products, state.vendors]);
 
+  // Taste Match: pull in a durable profile from Supabase if one exists (once
+  // the V8_1 migration is applied) without clobbering local progress made
+  // this session; then classify whatever products are visible and don't yet
+  // have cached attributes, via the AI route (with its own local fallback).
+  const tasteLoadedRef = useRef(false);
+  useEffect(() => {
+    if (tasteLoadedRef.current || !session.userId) return;
+    tasteLoadedRef.current = true;
+    void loadLiveTasteProfile(session.userId).then((remote) => {
+      if (!remote || !Object.keys(remote.weights).length) return;
+      setState((s) => (Object.keys(tasteProfileFor(s, session.email).weights).length ? s : upsertTasteProfile(s, session.email, remote.weights, remote.onboarded)));
+    });
+  }, [session.userId, session.email]);
+
   async function refreshMarketplace(showSuccess = false) {
     if (!isLiveSupabaseMode() || !locationConfirmed) return;
     setRefreshing(true); setCatalogueError("");
@@ -1055,21 +1259,10 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   function detectLocation() { if (!navigator.geolocation) return toast.error("Location is unavailable in this browser"); setLocating(true); navigator.geolocation.getCurrentPosition(async (position) => { const point = { lat: position.coords.latitude, lng: position.coords.longitude }; setDraftCoords(point); setDraftAddress(`GPS pin ${point.lat.toFixed(5)}, ${point.lng.toFixed(5)} — add flat/street details`); try { const place = await findLocation(point); setDraftAddress(place.address); setDraftCoords({ lat: place.latitude, lng: place.longitude }); toast.success(`Actual GPS location detected (±${Math.round(position.coords.accuracy)} m)`); } catch (error) { toast.info(error instanceof Error ? `${error.message} The exact GPS pin is still shown.` : "The exact GPS pin is shown; add street details."); } finally { setLocating(false); } }, (error) => { setLocating(false); toast.error(error.code === 1 ? "Allow precise location for localhost in Chrome, then try again" : "GPS could not get a fresh position. Search your complete address instead."); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }); }
   async function findTypedLocation() { if (!draftAddress.trim()) return toast.error("Enter your complete address first"); setMapBusy(true); try { const place = await findLocation({ address: draftAddress }); setDraftAddress(place.address); setDraftCoords({ lat: place.latitude, lng: place.longitude }); toast.success("Address located on the map"); } catch (error) { toast.error(error instanceof Error ? error.message : "Address was not found"); } finally { setMapBusy(false); } }
   async function saveLocation() { if (!Number.isFinite(draftCoords.lat) || !Number.isFinite(draftCoords.lng)) return toast.error("Detect GPS or find the typed address before saving"); try { if (session.userId && process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured()) await saveLiveCustomerLocation({ userId: session.userId, address: draftAddress, latitude: draftCoords.lat!, longitude: draftCoords.lng! }); setState((current) => ({ ...current, customers: current.customers.map((item) => item.email === session.email ? { ...item, address: draftAddress, latitude: draftCoords.lat, longitude: draftCoords.lng } : item) })); setLocationOpen(false); toast.success("Delivery location and service pin updated"); } catch (error) { toast.error(error instanceof Error ? error.message : "Location could not be saved"); } }
-  async function addToCart(product: Product) {
-    const own = state.cart.filter((item) => item.customerEmail === session.email);
-    const existing = own.find((item) => item.productId === product.id);
-    const nextOwn = existing ? own.map((item) => item.id === existing.id ? { ...item, quantity: item.quantity + 1 } : item) : [{ id: id("CART"), customerEmail: session.email, productId: product.id, quantity: 1 }, ...own];
-    setState((current) => ({ ...current, cart: [...current.cart.filter((item) => item.customerEmail !== session.email), ...nextOwn] }));
-    try {
-      if (isLiveSupabaseMode()) {
-        const saved = await syncLiveCart({ items: nextOwn.map((item) => ({ productId: item.productId, quantity: item.quantity })) });
-        if (saved.snapshot) setState((current) => mergeLiveCommerce(current, saved.snapshot as LiveCommerceStateSnapshot, session));
-      }
-      toast.success(`${product.name} added to cart`);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Cart could not be saved");
-      if (isLiveSupabaseMode()) { try { const snapshot = await loadLiveCommerceSnapshot(); setState((current) => mergeLiveCommerce(current, snapshot, session)); } catch {} }
-    }
+  function addToCart(product: Product) { return addProductToCart(state, setState, session, product); }
+  function openProduct(product: Product) {
+    recordTasteSignal(state, setState, session, product, "view");
+    setSelected(product);
   }
 
   const serviceable = locationConfirmed ? state.products.filter((product) => {
@@ -1081,6 +1274,18 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   }) : [];
 
   const serviceableSignature = serviceable.map((product) => `${product.id}:${product.stock}:${finalPrice(product, state)}`).sort().join("|");
+  useEffect(() => {
+    if (!serviceable.length) return;
+    const uncached = serviceable.filter((p) => !state.productAttributes[p.id]).slice(0, 12);
+    if (!uncached.length) return;
+    void fetchLiveFoodAttributes(uncached.map((p) => ({ id: p.id, name: p.name, category: p.category }))).then((remote) => {
+      setState((s) => {
+        const next = { ...s.productAttributes };
+        for (const p of uncached) next[p.id] = remote[p.id] && Object.keys(remote[p.id]).length ? remote[p.id] : inferAttributesLocally(p.name, p.category);
+        return { ...s, productAttributes: next };
+      });
+    });
+  }, [serviceableSignature]);
   useEffect(() => {
     if (!showAiPicks || !state.merchandising.recommendationPopupEnabled || !serviceable.length) return;
     let cancelled = false;
@@ -1103,47 +1308,18 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   }, [serviceableSignature, showAiPicks, state.merchandising.recommendationPopupEnabled]);
 
   const dietaryOptions = Array.from(new Set(serviceable.flatMap((product) => product.dietaryTags))).filter(Boolean).slice(0, 10);
-  const mapVendors: MapVendor[] = useMemo(() => {
-    if (!locationConfirmed) return [];
-    const byVendor = new Map<string, MapVendor>();
-    for (const product of serviceable) {
-      const vendor = state.vendors.find((v) => v.id === product.vendorId);
-      if (!vendor || !Number.isFinite(vendor.latitude) || !Number.isFinite(vendor.longitude)) continue;
-      const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude) ?? 0;
-      const existing = byVendor.get(vendor.id);
-      if (existing) existing.productCount = (existing.productCount || 0) + 1;
-      else byVendor.set(vendor.id, { id: vendor.id, name: vendor.businessName, lat: vendor.latitude!, lng: vendor.longitude!, distanceKm: distance, verified: vendor.verification === "Verified", productCount: 1 });
-    }
-    return [...byVendor.values()].sort((a, b) => a.distanceKm - b.distanceKm);
-  }, [serviceable, state.vendors, locationConfirmed, profile.latitude, profile.longitude]);
-  // "My food trail" — every vendor this customer has actually paid an order
-  // to, so the map can draw where their food has really come from and add
-  // up a real, growing "distance sourced" total (not a marketing estimate).
-  const trailVendors = useMemo(() => {
-    if (!locationConfirmed) return [];
-    const byVendor = new Map<string, { id: string; name: string; lat: number; lng: number; distanceKm: number; orderCount: number }>();
-    for (const order of state.orders) {
-      if (order.customerEmail !== session.email || order.payment !== "Paid") continue;
-      const vendor = state.vendors.find((v) => v.id === order.vendorId);
-      if (!vendor || !Number.isFinite(vendor.latitude) || !Number.isFinite(vendor.longitude)) continue;
-      const distance = distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude) ?? 0;
-      const existing = byVendor.get(vendor.id);
-      if (existing) existing.orderCount += 1;
-      else byVendor.set(vendor.id, { id: vendor.id, name: vendor.businessName, lat: vendor.latitude!, lng: vendor.longitude!, distanceKm: distance, orderCount: 1 });
-    }
-    return [...byVendor.values()];
-  }, [state.orders, state.vendors, session.email, locationConfirmed, profile.latitude, profile.longitude]);
+  const popularVendors = state.vendors
+    .filter((vendor) => serviceable.some((product) => product.vendorId === vendor.id))
+    .sort((a, b) => (distanceKm(profile.latitude, profile.longitude, a.latitude, a.longitude) ?? 99) - (distanceKm(profile.latitude, profile.longitude, b.latitude, b.longitude) ?? 99));
   const filtered = serviceable.filter((product) => {
     const vendor = state.vendors.find((v) => v.id === product.vendorId)!;
     const text = `${product.name} ${product.category} ${vendor.businessName} ${product.dietaryTags.join(" ")}`.toLowerCase();
-    const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude);
-    return (category === "All" || product.category === category)
+    return groupMatches(category, product.category)
       && (!query || text.includes(query.toLowerCase()))
       && (!maxPrice || finalPrice(product, state) <= maxPrice)
       && (!maxCalories || product.calories <= maxCalories)
       && (!minProtein || product.protein >= minProtein)
       && (dietary === "All" || product.dietaryTags.includes(dietary))
-      && (!mapOpen || distance === null || distance <= mapRadiusKm)
       && (!vendorFilter || product.vendorId === vendorFilter);
   });
 
@@ -1180,30 +1356,14 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
   return <div className="sp-marketplace space-y-6">
     <div className="sp-market-toolbar rounded-[28px] p-3">
       <div className="sp-market-toolbar-grid grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 md:grid-cols-[.8fr_1.2fr_auto] xl:grid-cols-[.72fr_1.28fr_auto]">
-        <button data-tour="location" onClick={() => { setDraftAddress(profile.address); setDraftCoords({ lat: profile.latitude, lng: profile.longitude }); setLocationOpen(true); }} className={`col-span-2 flex h-12 min-w-0 items-center rounded-2xl px-3 text-left md:col-span-1 ${locationConfirmed ? "bg-[#f1f6eb]" : "bg-amber-50 ring-1 ring-amber-300"}`}><MapPin className={`mr-2 size-5 shrink-0 ${locationConfirmed ? "text-[#5ba400]" : "text-amber-700"}`} /><span className="min-w-0 flex-1 truncate text-sm font-bold">{locationConfirmed ? profile.address : "Confirm your delivery location"}</span><LocateFixed className="ml-2 size-4 shrink-0 text-[#5ba400]" /></button>
+        <button data-tour="location" onClick={() => { setDraftAddress(profile.address); setDraftCoords({ lat: profile.latitude, lng: profile.longitude }); setLocationOpen(true); }} className={`col-span-2 h-12 min-w-0 items-center rounded-2xl px-3 text-left md:col-span-1 md:flex ${locationConfirmed ? "hidden bg-[#f1f6eb]" : "flex bg-amber-50 ring-1 ring-amber-300"}`}><MapPin className={`mr-2 size-5 shrink-0 ${locationConfirmed ? "text-[#5ba400]" : "text-amber-700"}`} /><span className="min-w-0 flex-1 truncate text-sm font-bold">{locationConfirmed ? profile.address : "Confirm your delivery location"}</span><LocateFixed className="ml-2 size-4 shrink-0 text-[#5ba400]" /></button>
         <div data-tour="search" className="flex h-12 items-center rounded-2xl bg-stone-100/90 px-3"><Search className="mr-2 size-5 text-stone-500" /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search food, vendor, category, dietary tag…" className="min-w-0 flex-1 bg-transparent text-sm outline-none" />{query && <button onClick={() => setQuery("")}><X className="size-4" /></button>}</div>
         <div className="flex gap-2">
           <button data-tour="filters" onClick={() => setFiltersOpen((value) => !value)} className={`flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-black ${filtersOpen || activeFilterCount ? "border-[#5f8f2d] bg-[#eff6e6] text-[#50772a]" : "bg-white"}`}><Filter className="size-4" />Filters {activeFilterCount > 0 && <span className="grid size-5 place-items-center rounded-full bg-[#5f8f2d] text-[10px] text-white">{activeFilterCount}</span>}</button>
-          <button data-tour="map" onClick={() => setMapOpen((value) => !value)} disabled={!locationConfirmed} className={`flex h-12 items-center justify-center gap-2 rounded-2xl border px-4 text-sm font-black disabled:opacity-40 ${mapOpen ? "border-[#237a45] bg-[#e8f2ea] text-[#153d2a]" : "bg-white"}`}><MapPinned className="size-4" />Map</button>
         </div>
       </div>
-      {mapOpen && locationConfirmed && (
-        <div className="mt-3 space-y-2">
-          <NearbyVendorsMap
-            customerLat={profile.latitude!}
-            customerLng={profile.longitude!}
-            vendors={mapVendors}
-            radiusKm={mapRadiusKm}
-            onRadiusChange={setMapRadiusKm}
-            onSelectVendor={(vendorId) => { setVendorFilter(vendorId); setMapOpen(false); requestAnimationFrame(() => document.querySelector('[data-tour="products"]')?.scrollIntoView({ behavior: "smooth", block: "start" })); }}
-            trails={trailVendors}
-          />
-          {!mapVendors.length && <p className="px-1 text-xs text-stone-500">No serviceable vendors have a saved map pin yet.</p>}
-        </div>
-      )}
-      {(mapOpen || vendorFilter) && (
+      {vendorFilter && (
         <div className="flex flex-wrap items-center gap-2 px-1 text-xs font-bold text-stone-500">
-          {mapOpen && <span className="rounded-full bg-[#e8f2ea] px-3 py-1.5 text-[#153d2a]">Showing within {mapRadiusKm} km on the map</span>}
           {vendorFilter && <button onClick={() => setVendorFilter("")} className="flex items-center gap-1.5 rounded-full bg-stone-100 px-3 py-1.5 text-stone-700"><MapPin className="size-3.5" />Viewing {state.vendors.find((v) => v.id === vendorFilter)?.businessName || "vendor"}<X className="size-3.5" /></button>}
         </div>
       )}
@@ -1219,20 +1379,27 @@ function Marketplace({ session, state, setState, navigate, openAgent }: { sessio
       </div>}
     </div>
 
+    <CategoryGrid selected={category} onSelect={(key) => { setCategory(key); if (key !== "All") requestAnimationFrame(() => document.querySelector('[data-tour="products"]')?.scrollIntoView({ behavior: "smooth", block: "start" })); }} />
+    <CampaignBanner campaigns={campaigns} onView={countCampaignView} onCta={runCampaign} fallback={<PromoBanner onShop={() => document.querySelector('[data-tour="products"]')?.scrollIntoView({ behavior: "smooth", block: "start" })} />} />
+    <VendorRow title={`Popular in ${shortArea(profile.address)}`} vendors={popularVendors} state={state} profile={profile} onOpen={openVendor} />
+    <VendorRow title="Home Foods" vendors={popularVendors.filter((v) => v.category === "Home food")} state={state} profile={profile} onOpen={openVendor} />
+    {(() => { const nearbyShorts = shorts.nearby(shortsRadius); return <ShortsRail shorts={nearbyShorts} onOpen={(i) => openShorts(nearbyShorts, i)} title={`Food Shorts within ${shortsRadius} km`} onSeeAll={onSeeAllShorts} />; })()}
+
+    <TasteOnboardingBanner state={state} setState={setState} session={session} />
+
     {showAiPicks && state.merchandising.recommendationPopupEnabled && aiPicks.length > 0 && <section className="sp-ai-card relative overflow-hidden rounded-[30px] p-5 sm:p-6">
       <button onClick={() => setShowAiPicks(false)} className="absolute right-4 top-4 grid size-9 place-items-center rounded-full bg-stone-100" aria-label="Close recommendations"><X className="size-4" /></button>
       <div className="pr-12"><div className="flex items-center gap-2 text-xs font-black uppercase tracking-[.16em] text-[#5f8f2d]"><Sparkles className="size-4" />She Agent · for you {aiPicksLoading && <RefreshCcw className="size-3 animate-spin" />}</div><h2 className="mt-2 text-lg font-black tracking-[-.02em]">A few useful picks, based on your marketplace and preferences.</h2><p className="mt-1 max-w-3xl text-sm text-stone-500">{aiPickMessage || "These are grounded in currently serviceable products. She Agent can refine by budget, calories, protein, diet, schedule or anything you ask naturally."}</p></div>
-      <div className="mt-5 flex snap-x gap-3 overflow-x-auto pb-2 hide-scrollbar md:grid md:grid-cols-3">{aiPicks.map((product) => <button key={product.id} onClick={() => setSelected(product)} className="surface-card-muted min-w-[82%] snap-start flex items-center gap-3 rounded-[22px] p-3 text-left transition hover:-translate-y-0.5 hover:bg-white hover:shadow-md md:min-w-0"><div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-0 flex-1"><div className="truncate font-black">{product.name}</div><div className="mt-1 text-xs text-stone-500">{money(finalPrice(product, state))} · {product.nutritionStatus === "Pending review" || product.calories <= 0 ? "nutrition pending" : `${product.calories} kcal · ${product.protein}g protein`}</div></div><ArrowRight className="size-4 text-stone-400" /></button>)}</div>
+      <div className="mt-5 flex snap-x gap-3 overflow-x-auto pb-2 hide-scrollbar md:grid md:grid-cols-3">{aiPicks.map((product) => <button key={product.id} onClick={() => openProduct(product)} className="surface-card-muted min-w-[82%] snap-start flex items-center gap-3 rounded-[22px] p-3 text-left transition hover:-translate-y-0.5 hover:bg-white hover:shadow-md md:min-w-0"><div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-0 flex-1"><div className="truncate font-black">{product.name}</div><div className="mt-1 text-xs text-stone-500">{money(finalPrice(product, state))} · {product.nutritionStatus === "Pending review" || product.calories <= 0 ? "nutrition pending" : `${product.calories} kcal · ${product.protein}g protein`}</div></div><ArrowRight className="size-4 text-stone-400" /></button>)}</div>
       <div className="mt-4 flex flex-wrap gap-2"><Button onClick={openAgent} className="rounded-xl bg-[#171914]"><Sparkles />Ask She Agent to refine</Button><Button onClick={() => { setMaxPrice(profile.agentMemory?.lastBudget || 300); setFiltersOpen(true); }} variant="outline" className="rounded-xl">Use my usual budget</Button></div>
     </section>}
     {!showAiPicks && <div className="flex justify-end"><button onClick={() => setShowAiPicks(true)} className="soft-chip"><Sparkles className="size-3.5" />Show AI picks</button></div>}
 
-    {featured.length > 0 && <section><div className="flex items-end justify-between"><div><p className="text-xs font-black uppercase tracking-[.16em] text-[#e55a41]">Featured today</p><h2 className="mt-1 text-lg font-black">Picked by ShePlates</h2></div><span className="text-xs text-stone-400">Curated by Super Admin</span></div><div className="mt-4 flex gap-3 overflow-x-auto pb-2 hide-scrollbar">{featured.map((product) => <button key={product.id} onClick={() => setSelected(product)} className="surface-card min-w-[240px] rounded-[24px] p-3 text-left"><div className="flex items-center gap-3"><div className="grid size-14 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div><div className="font-black">{product.name}</div><div className="text-xs text-stone-500">{money(finalPrice(product, state))}</div></div></div></button>)}</div></section>}
+    {featured.length > 0 && <section><div className="flex items-end justify-between"><div><p className="text-xs font-black uppercase tracking-[.16em] text-[#e55a41]">Featured today</p><h2 className="mt-1 text-lg font-black">Picked by ShePlates</h2></div><span className="text-xs text-stone-400">Curated by Super Admin</span></div><div className="mt-4 flex gap-3 overflow-x-auto pb-2 hide-scrollbar">{featured.map((product) => <button key={product.id} onClick={() => openProduct(product)} className="surface-card min-w-[240px] rounded-[24px] p-3 text-left"><div className="flex items-center gap-3"><div className="grid size-14 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div><div className="font-black">{product.name}</div><div className="text-xs text-stone-500">{money(finalPrice(product, state))}</div></div></div></button>)}</div></section>}
 
-    <section data-tour="categories"><div className="flex items-end justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-[.14em] text-[#5ba400]">Browse categories</p><h2 className="mt-1 text-lg font-black">Find what fits today</h2></div>{category !== "All" && <button onClick={() => setCategory("All")} className="text-sm font-bold text-[#5ba400]">View all</button>}</div><div className="sp-category-strip mt-4 flex gap-2 overflow-x-auto pb-2 hide-scrollbar"><button onClick={() => setCategory("All")} className={`sp-category-chip min-w-24 rounded-2xl border px-4 py-3 text-sm font-black ${category === "All" ? "border-[#5ba400] bg-[#eff6e6] text-[#50772a]" : "bg-white"}`}>All</button>{categories.map((item) => <button key={item.name} onClick={() => setCategory(category === item.name ? "All" : item.name)} className={`sp-category-chip min-w-28 rounded-2xl border bg-white p-2.5 text-center ${category === item.name ? "border-[#5ba400] ring-2 ring-[#5ba400]/10" : ""}`}><div className="mx-auto grid size-10 place-items-center rounded-xl" style={{ background: item.color }}><CategoryBadge name={item.name} /></div><div className="mt-1.5 text-[11px] font-black">{item.name}</div></button>)}</div></section>
 
     <section><div className="flex flex-wrap items-end justify-between gap-3"><Heading eyebrow="MARKETPLACE" title={`${visible.length} option${visible.length === 1 ? "" : "s"} · ${deliveryDate}${periodDays > 1 ? ` to ${periodEndDate}` : ""}`} body="Verified, open and serviceable vendors only. Use search and filters for budget, calories, protein, dietary preferences and your planning window. Current stock is shown; final slot capacity is confirmed when you schedule." /><Button variant="outline" onClick={() => void refreshMarketplace(true)} disabled={refreshing || !isLiveSupabaseMode()} className="rounded-xl"><RefreshCcw className={refreshing ? "animate-spin" : ""} />Refresh</Button></div>{catalogueError && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{catalogueError}</div>}
-      <div data-tour="products" className="sp-market-grid mt-5 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">{visible.map((product) => { const vendor = state.vendors.find((v) => v.id === product.vendorId)!; const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude); const personalized = preferenceScore(product) > 5; const fulfilmentLabel = vendor.delivery && vendor.pickup ? "Delivery & pickup" : vendor.pickup ? "Pickup only" : "Delivery only"; const isWishlisted = state.wishlist.some((w) => w.customerEmail === session.email && w.productId === product.id); const rating = productRating(product.id, state.reviews); return <article key={product.id} className="sp-product-card group rounded-[28px] p-4"><div className="sp-product-image relative grid h-36 place-items-center overflow-hidden rounded-[22px]" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover transition group-hover:scale-[1.03]" /> : <ProductGlyph category={product.category} iconClassName="size-12" />}{personalized && <span className="absolute left-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-black text-[#50772a] shadow"><Sparkles className="mr-1 inline size-3" />For you</span>}<button type="button" onClick={() => setState((s) => ({ ...s, wishlist: isWishlisted ? s.wishlist.filter((w) => !(w.customerEmail === session.email && w.productId === product.id)) : [{ customerEmail: session.email, productId: product.id, addedAt: new Date().toISOString() }, ...s.wishlist] }))} aria-label={isWishlisted ? "Remove from wishlist" : "Save to wishlist"} className="absolute right-3 top-3 grid size-8 place-items-center rounded-full bg-white/95 shadow transition hover:scale-110"><Heart className={`size-4 ${isWishlisted ? "fill-[#e0455f] text-[#e0455f]" : "text-stone-400"}`} /></button></div><div className="mt-4 flex items-start justify-between gap-2"><div><h3 className="font-black">{product.name}</h3><p className="mt-1 text-xs text-stone-500">{vendor.businessName} · {product.baseUnit}</p>{rating && <p className="mt-1 flex items-center gap-1"><StarRow value={rating.average} size="size-3" /><span className="text-[11px] font-bold text-stone-500">{rating.average.toFixed(1)} ({rating.count})</span></p>}<p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[#5ba400]"><span>{distance?.toFixed(1)} km {vendor.pickup && !vendor.delivery ? "to pick up" : "away"}</span><span className="text-stone-300">·</span><span className={vendor.pickup && !vendor.delivery ? "text-amber-700" : ""}>{fulfilmentLabel}</span></p></div><BadgeCheck className="size-5 shrink-0 text-[#5ba400]" /></div><div className="mt-3 flex flex-wrap gap-1">{product.nutritionStatus === "Pending review" || product.calories <= 0 ? <Status className="border-amber-200 bg-amber-50 text-amber-800">Nutrition pending</Status> : <><Status>{product.calories} kcal</Status><Status>{product.protein}g protein</Status></>}{product.dietaryTags.slice(0, 2).map((tag) => <Status key={tag}>{tag}</Status>)}</div><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-lg font-black sm:text-xl">{money(finalPrice(product, state))}</div><div className="text-[10px] text-stone-500 sm:text-xs">per pack</div></div><div className="sp-card-actions flex min-w-0 gap-1.5 sm:gap-2"><Button size="sm" variant="outline" onClick={() => addToCart(product)} className="min-w-0 flex-1 rounded-xl px-2 sm:px-3"><ShoppingCart /><span>Add</span></Button><Button size="sm" onClick={() => setSelected(product)} className="min-w-0 flex-1 rounded-xl bg-[#ef3d3d] px-2 hover:bg-[#d92f2f] sm:px-3"><CalendarDays /><span>Plan</span></Button></div></div></article>; })}</div>
+      <div data-tour="products" className="sp-market-grid mt-5 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">{visible.map((product) => { const vendor = state.vendors.find((v) => v.id === product.vendorId)!; const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude); const personalized = preferenceScore(product) > 5; const fulfilmentLabel = vendor.delivery && vendor.pickup ? "Delivery & pickup" : vendor.pickup ? "Pickup only" : "Delivery only"; const isWishlisted = state.wishlist.some((w) => w.customerEmail === session.email && w.productId === product.id); const rating = productRating(product.id, state.reviews); return <article key={product.id} className="sp-product-card group rounded-[28px] p-4"><div className="sp-product-image relative grid h-36 place-items-center overflow-hidden rounded-[22px]" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover transition group-hover:scale-[1.03]" /> : <ProductGlyph category={product.category} iconClassName="size-12" />}{personalized && <span className="absolute left-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-black text-[#50772a] shadow"><Sparkles className="mr-1 inline size-3" />For you</span>}<button type="button" onClick={() => setState((s) => ({ ...s, wishlist: isWishlisted ? s.wishlist.filter((w) => !(w.customerEmail === session.email && w.productId === product.id)) : [{ customerEmail: session.email, productId: product.id, addedAt: new Date().toISOString() }, ...s.wishlist] }))} aria-label={isWishlisted ? "Remove from wishlist" : "Save to wishlist"} className="absolute right-3 top-3 grid size-8 place-items-center rounded-full bg-white/95 shadow transition hover:scale-110"><Heart className={`size-4 ${isWishlisted ? "fill-[#e0455f] text-[#e0455f]" : "text-stone-400"}`} /></button></div><div className="mt-4 flex items-start justify-between gap-2"><div><h3 className="font-black">{product.name}</h3><p className="mt-1 text-xs text-stone-500">{vendor.businessName} · {product.baseUnit}</p>{rating && <p className="mt-1 flex items-center gap-1"><StarRow value={rating.average} size="size-3" /><span className="text-[11px] font-bold text-stone-500">{rating.average.toFixed(1)} ({rating.count})</span></p>}<div className="mt-1"><TasteMatchBadge state={state} setState={setState} session={session} product={product} /></div><p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[#5ba400]"><span>{distance?.toFixed(1)} km {vendor.pickup && !vendor.delivery ? "to pick up" : "away"}</span><span className="text-stone-300">·</span><span className={vendor.pickup && !vendor.delivery ? "text-amber-700" : ""}>{fulfilmentLabel}</span></p></div><BadgeCheck className="size-5 shrink-0 text-[#5ba400]" /></div><div className="mt-3 flex flex-wrap gap-1">{product.nutritionStatus === "Pending review" || product.calories <= 0 ? <Status className="border-amber-200 bg-amber-50 text-amber-800">Nutrition pending</Status> : <><Status>{product.calories} kcal</Status><Status>{product.protein}g protein</Status></>}{product.dietaryTags.slice(0, 2).map((tag) => <Status key={tag}>{tag}</Status>)}</div><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-lg font-black sm:text-xl">{money(finalPrice(product, state))}</div><div className="text-[10px] text-stone-500 sm:text-xs">per pack</div></div><div className="sp-card-actions flex min-w-0 gap-1.5 sm:gap-2"><Button size="sm" variant="outline" onClick={() => addToCart(product)} className="min-w-0 flex-1 rounded-xl px-2 sm:px-3"><ShoppingCart /><span>Add</span></Button><Button size="sm" onClick={() => openProduct(product)} className="min-w-0 flex-1 rounded-xl bg-[#ef3d3d] px-2 hover:bg-[#d92f2f] sm:px-3"><CalendarDays /><span>Plan</span></Button></div></div></article>; })}</div>
       {!visible.length && (locationConfirmed ? <div className="mt-5 space-y-4"><Empty icon={Store} title="No matching products" body={serviceable.length ? "Your filters are narrowing the currently serviceable marketplace. Clear one or more filters, or ask She Agent for alternatives." : emptyReason} action={serviceable.length ? <Button onClick={() => { setMaxPrice(0); setMaxCalories(0); setMinProtein(0); setDietary("All"); setCategory("All"); setQuery(""); }} variant="outline" className="rounded-xl">Clear marketplace filters</Button> : undefined} /><div className="grid gap-3 sm:grid-cols-5">{diagnostics && [["Verified", diagnostics.verified_vendors], ["Open", diagnostics.open_vendors], ["With stock", diagnostics.vendors_with_products], ["In radius", diagnostics.vendors_in_radius], ["Products", diagnostics.serviceable_products]].map(([label, value]) => <div key={String(label)} className="surface-card rounded-2xl p-3 text-center"><div className="text-xl font-black">{value}</div><div className="text-xs text-stone-500">{label}</div></div>)}</div></div> : <Empty icon={LocateFixed} title="Confirm your actual location first" body="Products are hidden until GPS or a searched address creates a real service pin." action={<Button onClick={() => setLocationOpen(true)} className="rounded-xl bg-[#5ba400]"><LocateFixed />Detect my location</Button>} />)}
     </section>
 
@@ -1495,7 +1662,17 @@ function parseRequirementText(text: string) {
 function RequirementsV4({ session, state, setState }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
   const [title, setTitle] = useState("Monthly household groceries"), [deliveryDate, setDeliveryDate] = useState(tomorrow()), [closingDate, setClosingDate] = useState(tomorrow()), [sourceFileName, setSourceFileName] = useState(""), [items, setItems] = useState<RequirementItem[]>([{ id: id("ITM"), name: "", quantity: 1, unit: "kg", brand: "Any" }]);
   async function upload(file?: File) { if (!file) return; setSourceFileName(file.name); const text = await file.text(); const parsed = parseRequirementText(text); if (!parsed.length) return toast.error("No list rows were found. Use CSV/TXT with one product per line."); setItems(parsed); toast.success(`${parsed.length} item(s) extracted. Review before sending.`); }
-  function submit() { const valid = items.filter((x) => x.name.trim()); if (!valid.length) return toast.error("Add at least one item"); if (closingDate > deliveryDate) return toast.error("RFQ closing date must be on or before the required date"); const profile = state.customers.find((x) => x.email === session.email); const eligible = state.vendors.filter((v) => v.verification === "Verified" && v.operational === "Active" && v.plan === "Premium" && (!profile || distanceKm(profile.latitude, profile.longitude, v.latitude, v.longitude) === null || distanceKm(profile.latitude, profile.longitude, v.latitude, v.longitude)! <= v.radiusKm)); const requirement: Requirement = { id: id("RFQ"), customerEmail: session.email, title, deliveryDate, closingDate, sourceFileName, items: valid, status: "Quoting", invitedVendorIds: eligible.map((x) => x.id) }; setState((s) => ({ ...s, requirements: [requirement, ...s.requirements], notifications: [notice(session.email, "customer", "RFQ published", `${eligible.length} serviceable Premium vendor(s) were invited. Quotes close ${closingDate}.`), ...eligible.map((v) => notice(v.ownerEmail, "vendor", "New local RFQ", `${title} closes ${closingDate}.`)), ...s.notifications] })); toast.success("RFQ sent to eligible local vendors"); }
+  async function submit() { const valid = items.filter((x) => x.name.trim()); if (!valid.length) return toast.error("Add at least one item"); if (closingDate > deliveryDate) return toast.error("RFQ closing date must be on or before the required date"); const profile = state.customers.find((x) => x.email === session.email);
+    if (isLiveSupabaseMode()) {
+      // Live mode: the database saves the RFQ and invites every Package 3 vendor whose own service radius covers this pin.
+      if (!profile || !Number.isFinite(profile.latitude) || !Number.isFinite(profile.longitude)) return toast.error("Set your delivery location first so vendors near you can be found");
+      try {
+        const result = await publishRequirement({ title, locality: shortArea(profile.address), latitude: profile.latitude!, longitude: profile.longitude!, deliveryDate, closingDate, items: valid.map((x) => ({ name: x.name, quantity: x.quantity, unit: x.unit, brand: x.brand })) });
+        toast.success(result.invited ? `RFQ sent to ${result.invited} Package 3 vendor${result.invited === 1 ? "" : "s"} near you. Track replies under My quotations` : "RFQ saved. No Package 3 vendor covers your address yet");
+        setItems([{ id: id("ITM"), name: "", quantity: 1, unit: "kg", brand: "Any" }]); setSourceFileName("");
+      } catch (error) { toast.error(error instanceof Error ? error.message : "The RFQ could not be published"); }
+      return;
+    } const eligible = state.vendors.filter((v) => v.verification === "Verified" && v.operational === "Active" && v.plan === "Premium" && (!profile || distanceKm(profile.latitude, profile.longitude, v.latitude, v.longitude) === null || distanceKm(profile.latitude, profile.longitude, v.latitude, v.longitude)! <= v.radiusKm)); const requirement: Requirement = { id: id("RFQ"), customerEmail: session.email, title, deliveryDate, closingDate, sourceFileName, items: valid, status: "Quoting", invitedVendorIds: eligible.map((x) => x.id) }; setState((s) => ({ ...s, requirements: [requirement, ...s.requirements], notifications: [notice(session.email, "customer", "RFQ published", `${eligible.length} serviceable Premium vendor(s) were invited. Quotes close ${closingDate}.`), ...eligible.map((v) => notice(v.ownerEmail, "vendor", "New local RFQ", `${title} closes ${closingDate}.`)), ...s.notifications] })); toast.success("RFQ sent to eligible local vendors"); }
   return <div className="space-y-6"><Heading eyebrow="MONTHLY RFQ" title="Upload or build your monthly list" body="She Agent structures CSV/TXT lists, you review them, set the quote closing date, then eligible local Premium vendors are invited." /><label className="surface-card-muted grid min-h-32 cursor-pointer place-items-center rounded-[28px] border-2 border-dashed p-5 text-center"><input type="file" accept=".csv,.txt,.tsv" className="hidden" onChange={(e) => void upload(e.target.files?.[0])} /><Upload className="text-[#ef3d3d]" /><b>{sourceFileName || "Upload monthly list (CSV, TXT or TSV)"}</b><span className="text-xs text-stone-500">Example: Rice, 5 kg, preferred brand</span></label><div className="surface-card rounded-[28px] p-5"><div className="grid gap-4 md:grid-cols-3"><Field label="Request title"><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} /></Field><Field label="Quotes close on"><input type="date" min={tomorrow()} value={closingDate} onChange={(e) => setClosingDate(e.target.value)} className={inputClass} /></Field><Field label="Delivery needed on"><input type="date" min={closingDate || tomorrow()} value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} className={inputClass} /></Field></div><div className="mt-5 space-y-3">{items.map((item, index) => <div key={item.id} className="grid gap-2 rounded-[24px] bg-[#f8f5ef] p-3.5 md:grid-cols-[1.5fr_.5fr_.55fr_1fr_auto]"><input aria-label={`Item ${index + 1}`} value={item.name} onChange={(e) => setItems((list) => list.map((x) => x.id === item.id ? { ...x, name: e.target.value } : x))} placeholder="Product name" className={inputClass} /><input type="number" min=".1" step=".1" value={item.quantity} onChange={(e) => setItems((list) => list.map((x) => x.id === item.id ? { ...x, quantity: Number(e.target.value) } : x))} className={inputClass} /><Select value={item.unit} onValueChange={(value) => setItems((list) => list.map((x) => x.id === item.id ? { ...x, unit: value } : x))}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{["kg","g","litre","ml","piece","pack","dozen"].map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select><input value={item.brand} onChange={(e) => setItems((list) => list.map((x) => x.id === item.id ? { ...x, brand: e.target.value } : x))} className={inputClass} /><Button variant="ghost" onClick={() => setItems((list) => list.filter((x) => x.id !== item.id))}><X /></Button></div>)}</div><div className="mt-4 flex gap-2"><Button variant="outline" onClick={() => setItems((x) => [...x, { id: id("ITM"), name: "", quantity: 1, unit: "pack", brand: "Any" }])}><Plus />Add row</Button><Button onClick={submit} className="bg-[#ef3d3d]"><Send />Publish RFQ</Button></div></div></div>;
 }
 
@@ -1510,6 +1687,16 @@ function CustomerProfileV4({ session, state, setState }: { session: DemoSession;
   const memory = profile.agentMemory || {};
   const [phone, setPhone] = useState(profile.phone || ""), [address, setAddress] = useState(profile.address), [diet, setDiet] = useState(profile.diet), [allergies, setAllergies] = useState(profile.allergies.join(", ")), [goals, setGoals] = useState(profile.goals.join(", ")), [instructions, setInstructions] = useState(profile.dislikes), [coords, setCoords] = useState({ lat: profile.latitude, lng: profile.longitude });
   const [clearingMemory, setClearingMemory] = useState(false);
+  const tasteProfile = tasteProfileFor(state, session.email);
+  const [tasteSelected, setTasteSelected] = useState<string[]>(TASTE_SETUP_CHOICES.filter((dimension) => (tasteProfile.weights[dimension] || 0) >= 0.5));
+  function toggleTaste(dimension: string) { setTasteSelected((list) => list.includes(dimension) ? list.filter((x) => x !== dimension) : [...list, dimension]); }
+  function saveTastePreferences() {
+    const behavioral = Object.fromEntries(Object.entries(tasteProfile.weights).filter(([dimension]) => !(TASTE_SETUP_CHOICES as string[]).includes(dimension)));
+    const next = { ...behavioral, ...weightsFromSetupChoices(tasteSelected) };
+    setState((s) => upsertTasteProfile(s, session.email, next, true));
+    if (session.userId) void saveLiveTasteProfile(session.userId, next, true);
+    toast.success("Taste preferences saved");
+  }
   function detect() { navigator.geolocation?.getCurrentPosition(async (position) => { const point = { lat: position.coords.latitude, lng: position.coords.longitude }; setCoords(point); try { const place = await findLocation(point); setAddress(place.address); } catch { setAddress(`GPS pin ${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`); } }, () => toast.error("Allow precise location in your browser"), { enableHighAccuracy: true, maximumAge: 0 }); }
   async function save() { const next = { ...profile, phone, address, latitude: coords.lat, longitude: coords.lng, diet, allergies: allergies.split(",").map((x) => x.trim()).filter(Boolean), goals: goals.split(",").map((x) => x.trim()).filter(Boolean), dislikes: instructions, addresses: [{ id: profile.addresses?.[0]?.id || id("ADR"), label: "Home", address, latitude: coords.lat, longitude: coords.lng, phone, isDefault: true }, ...(profile.addresses || []).filter((x) => !x.isDefault)] }; try { if (session.userId && isLiveSupabaseMode() && Number.isFinite(coords.lat) && Number.isFinite(coords.lng)) await saveLiveCustomerProfile({ userId: session.userId, phone, address, latitude: coords.lat!, longitude: coords.lng!, householdSize: profile.householdSize, diet, allergies: next.allergies, goals: next.goals, instructions }); setState((s) => ({ ...s, customers: s.customers.map((x) => x.email === session.email ? next : x) })); toast.success("Profile and default address saved"); } catch (error) { toast.error(error instanceof Error ? error.message : "Profile could not be saved"); } }
   function addAddress() { const value = prompt("Enter another complete delivery address"); if (!value) return; setState((s) => ({ ...s, customers: s.customers.map((x) => x.email === session.email ? { ...x, addresses: [...(x.addresses || []), { id: id("ADR"), label: `Address ${(x.addresses?.length || 0) + 1}`, address: value, isDefault: false }] } : x) })); }
@@ -1536,17 +1723,128 @@ function CustomerProfileV4({ session, state, setState }: { session: DemoSession;
     <div className="grid gap-5 lg:grid-cols-2"><div className="surface-card space-y-4 rounded-[28px] p-6"><Field label="Phone / WhatsApp"><input value={phone} onChange={(e) => setPhone(e.target.value)} className={inputClass} placeholder="+91 ..." /></Field><Field label="Default delivery address"><Textarea value={address} onChange={(e) => setAddress(e.target.value)} className="rounded-xl" /></Field><LocationSuggestions query={address} onSelect={(place) => { setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); }} /><Button variant="outline" onClick={detect}><LocateFixed />Use actual location</Button><MapPreview lat={coords.lat} lng={coords.lng} radius={0} label="Default delivery address" /><div className="space-y-2">{(profile.addresses || []).filter((x) => !x.isDefault).map((item) => <div key={item.id} className="rounded-2xl bg-[#f7f3ed] p-3 text-sm"><b>{item.label}</b><div>{item.address}</div></div>)}</div></div>
       <div className="surface-card space-y-4 rounded-[28px] p-6"><Field label="Diet"><input value={diet} onChange={(e) => setDiet(e.target.value)} className={inputClass} /></Field><Field label="Allergies (comma separated)"><input value={allergies} onChange={(e) => setAllergies(e.target.value)} className={inputClass} /></Field><Field label="Health goals (comma separated)"><input value={goals} onChange={(e) => setGoals(e.target.value)} className={inputClass} /></Field><Field label="Instructions for She Agent"><Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} className="min-h-28 rounded-xl" /></Field><Button onClick={() => void save()} className="bg-[#5ba400]"><Check />Save profile</Button></div></div>
     <section className="surface-card rounded-[28px] p-6"><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><div className="flex items-center gap-2"><Sparkles className="size-5 text-[#5f8f2d]" /><h3 className="text-lg font-black">What She Agent remembers</h3></div><p className="mt-2 max-w-3xl text-sm leading-6 text-stone-500">Only durable commerce preferences should be learned from natural conversations. Sensitive attributes, payment data and precise location are excluded from this memory layer.</p></div><Button variant="outline" disabled={clearingMemory} onClick={() => void clearMemory()} className="rounded-xl text-red-600">{clearingMemory ? <RefreshCcw className="animate-spin" /> : <X />}{clearingMemory ? "Clearing…" : "Clear learned memory"}</Button></div><div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{remembered.map(([label, value]) => <div key={label} className="rounded-[20px] bg-[#f8f5ef] p-4"><div className="text-[11px] font-black uppercase tracking-[.12em] text-stone-400">{label}</div><div className="mt-2 text-sm font-black">{value}</div></div>)}</div></section>
+    <section className="surface-card rounded-[28px] p-6"><div className="flex items-center gap-2"><Flame className="size-5 text-[#ef3d3d]" /><h3 className="text-lg font-black">Taste Match preferences</h3></div><p className="mt-2 max-w-3xl text-sm leading-6 text-stone-500">Pick what tastes like you. Marketplace products show a Taste Match % based on this, and on what you view, save and order — you can adjust it here anytime.</p><div className="mt-4 flex flex-wrap gap-2">{TASTE_SETUP_CHOICES.map((dimension) => <button type="button" key={dimension} onClick={() => toggleTaste(dimension)} className={`rounded-full border px-3 py-2 text-sm font-bold ${tasteSelected.includes(dimension) ? "border-[#ef3d3d] bg-[#fdeceb] text-[#ef3d3d]" : "bg-white text-stone-500"}`}>{TASTE_DIMENSION_LABELS[dimension]}</button>)}</div><Button onClick={saveTastePreferences} className="mt-4 rounded-xl bg-[#ef3d3d] hover:bg-[#d92f2f]"><Check />Save taste preferences</Button></section>
   </div>;
 }
 
-function VendorArea({ active, session, state, setState }: { active: string; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
+/** Re-renders once a second purely to keep a countdown string fresh — the
+ * source of truth (starts_at/ends_at) always comes from the server, this
+ * never derives or trusts a client-computed deadline. */
+function DropCountdown({ target }: { target: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <>{formatCountdown(target)}</>;
+}
+
+function CreateFoodDropDialog({ open, close, vendor, products, state, setState }: { open: boolean; close: () => void; vendor: Vendor; products: Product[]; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
+  const [productId, setProductId] = useState("");
+  const [title, setTitle] = useState("");
+  const [dropPrice, setDropPrice] = useState(0);
+  const [quantity, setQuantity] = useState(10);
+  const [durationHours, setDurationHours] = useState(3);
+  const [busy, setBusy] = useState(false);
+  const product = products.find((p) => p.id === productId);
+  const originalPrice = product ? finalPrice(product, state) : 0;
+
+  useEffect(() => { if (!open) { setProductId(""); setTitle(""); setDropPrice(0); setQuantity(10); setDurationHours(3); } }, [open]);
+  useEffect(() => { if (product) { setTitle(`${product.name} — flash drop`); setDropPrice(Math.max(1, Math.round(finalPrice(product, state) * 0.7))); } }, [productId]);
+
+  async function submit() {
+    if (!product) return toast.error("Choose a product");
+    if (!title.trim()) return toast.error("Enter a title");
+    if (!dropPrice || dropPrice <= 0 || dropPrice >= originalPrice) return toast.error("Drop price must be positive and below the current price");
+    if (!quantity || quantity <= 0) return toast.error("Enter how many units are available");
+    setBusy(true);
+    try {
+      const startsAt = new Date().toISOString();
+      const endsAt = new Date(Date.now() + durationHours * 3600_000).toISOString();
+      const drop = await createLiveFoodDrop({ vendorId: vendor.id, productId: product.id, title: title.trim(), dropPrice, originalPrice, totalQuantity: quantity, startsAt, endsAt });
+      setState((s) => ({ ...s, foodDrops: [drop, ...s.foodDrops] }));
+      toast.success("Food Drop is live");
+      close();
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Drop could not be created"); }
+    finally { setBusy(false); }
+  }
+
+  return <Dialog open={open} onOpenChange={(v) => !v && close()}><DialogContent className="rounded-[26px] sm:max-w-lg"><DialogHeader><DialogTitle className="text-lg font-black">New Food Drop</DialogTitle><DialogDescription>A time-limited discounted quantity of one of your products. Stock is enforced by the database — claims stop the instant units run out, even under simultaneous requests.</DialogDescription></DialogHeader>
+    <div className="space-y-4">
+      <Field label="Product"><Select value={productId} onValueChange={setProductId}><SelectTrigger className="h-11 w-full rounded-xl"><SelectValue placeholder="Choose a product" /></SelectTrigger><SelectContent>{products.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></Field>
+      <Field label="Drop title"><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} /></Field>
+      <div className="grid grid-cols-2 gap-3"><Field label={`Drop price${originalPrice ? ` (was ${money(originalPrice)})` : ""}`}><input type="number" min="1" value={dropPrice || ""} onChange={(e) => setDropPrice(Number(e.target.value))} className={inputClass} /></Field><Field label="Units available"><input type="number" min="1" step="1" value={quantity || ""} onChange={(e) => setQuantity(Number(e.target.value))} className={inputClass} /></Field></div>
+      <Field label={`Runs for ${durationHours} hour${durationHours === 1 ? "" : "s"}`}><Slider value={[durationHours]} min={1} max={12} step={1} onValueChange={(v) => setDurationHours(v[0])} /></Field>
+      <Button onClick={() => void submit()} disabled={busy || !products.length} className="h-12 w-full rounded-xl bg-[#ef3d3d] font-black"><Zap />{busy ? "Publishing…" : "Publish drop"}</Button>
+    </div>
+  </DialogContent></Dialog>;
+}
+
+function FoodDropsManager({ vendor, state, setState }: { vendor: Vendor; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
+  const loadedRef = useRef(false);
+  const [creating, setCreating] = useState(false);
+  const drops = state.foodDrops.filter((d) => d.vendorId === vendor.id).sort((a, b) => b.startsAt.localeCompare(a.startsAt));
+  const dropIds = drops.map((d) => d.id);
+  const claims = state.foodDropClaims.filter((c) => dropIds.includes(c.dropId));
+  const products = state.products.filter((p) => p.vendorId === vendor.id && p.active);
+
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+    void loadLiveVendorFoodDrops(vendor.id).then((remote) => {
+      if (!remote.length) return;
+      setState((s) => ({ ...s, foodDrops: [...remote, ...s.foodDrops.filter((d) => d.vendorId !== vendor.id)] }));
+      void loadLiveFoodDropClaims(remote.map((d) => d.id)).then((claimRows) => {
+        if (!claimRows.length) return;
+        const remoteIds = new Set(remote.map((d) => d.id));
+        setState((s) => ({ ...s, foodDropClaims: [...claimRows, ...s.foodDropClaims.filter((c) => !remoteIds.has(c.dropId))] }));
+      });
+    });
+  }, [vendor.id]);
+
+  async function cancel(drop: FoodDrop) {
+    if (!confirm(`End "${drop.title}" now? Customers will no longer be able to claim it.`)) return;
+    try {
+      await cancelLiveFoodDrop(drop.id);
+      setState((s) => ({ ...s, foodDrops: s.foodDrops.map((d) => d.id === drop.id ? { ...d, status: "cancelled" as const } : d) }));
+      toast.success("Drop ended");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Drop could not be ended"); }
+  }
+
+  return <div className="space-y-6">
+    <Heading eyebrow="FLASH OFFERS" title="Food Drops" body="Time-limited offers on your own products. Stock is enforced by the database, not the app — once claims reach your quantity, the drop stops selling automatically, even under simultaneous claims." action={<Button onClick={() => setCreating(true)} disabled={!products.length} className="rounded-xl bg-[#ef3d3d]"><Plus />New drop</Button>} />
+    {!products.length && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Add an active product in your Catalog first — a drop always discounts an existing product.</div>}
+    {drops.length ? <div className="grid gap-4 lg:grid-cols-2">{drops.map((drop) => {
+      const product = state.products.find((p) => p.id === drop.productId);
+      const status = dropDisplayStatus(drop);
+      const dropClaims = claims.filter((c) => c.dropId === drop.id);
+      const revenue = dropClaims.reduce((sum, c) => sum + c.totalPrice, 0);
+      const claimedUnits = drop.totalQuantity - drop.remainingQuantity;
+      const tone = status === "live" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : status === "sold_out" ? "border-amber-200 bg-amber-50 text-amber-800" : status === "scheduled" ? "border-sky-200 bg-sky-50 text-sky-800" : "border-stone-200 bg-stone-50 text-stone-500";
+      const statusLabel = status === "live" ? "Live" : status === "scheduled" ? "Scheduled" : status === "sold_out" ? "Sold out" : "Ended";
+      return <div key={drop.id} className="surface-card rounded-[26px] p-5">
+        <div className="flex items-start justify-between gap-3"><div><h3 className="font-black">{drop.title}</h3><p className="mt-1 text-xs text-stone-500">{product?.name || "Product"}</p></div><Status className={tone}>{statusLabel}</Status></div>
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm"><Review label="Price" value={`${money(drop.dropPrice)} (was ${money(drop.originalPrice)})`} /><Review label="Discount" value={`${discountPercent(drop)}%`} /><Review label="Claimed" value={`${claimedUnits} / ${drop.totalQuantity}`} /><Review label="Revenue" value={money(revenue)} /></div>
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full bg-[#ef3d3d]" style={{ width: `${claimedPercent(drop)}%` }} /></div>
+        {status === "live" && <p className="mt-3 text-xs font-bold text-stone-500"><Timer className="mr-1 inline size-3.5" />Ends in <DropCountdown target={drop.endsAt} /></p>}
+        {status === "scheduled" && <p className="mt-3 text-xs font-bold text-stone-500"><Timer className="mr-1 inline size-3.5" />Starts in <DropCountdown target={drop.startsAt} /></p>}
+        {(status === "live" || status === "scheduled") && <Button size="sm" variant="outline" onClick={() => void cancel(drop)} className="mt-4 rounded-xl text-red-600">End drop now</Button>}
+      </div>;
+    })}</div> : <Empty icon={Zap} title="No drops yet" body="Create a flash offer on one of your products to drive same-day demand." />}
+    <CreateFoodDropDialog open={creating} close={() => setCreating(false)} vendor={vendor} products={products} state={state} setState={setState} />
+  </div>;
+}
+
+function VendorArea({ active, session, state, setState, shorts }: { active: string; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; shorts: ShortsApi }) {
   const vendor = vendorFor(state, session)!;
   if (active === "AI insights") return <VendorAIInsights vendor={vendor} state={state} session={session} />;
   if (active === "Online shop & POS") return <StorefrontPos vendor={vendor} state={state} setState={setState} session={session} />;
   if (active === "Store & radius") return <StoreRadius vendor={vendor} setState={setState} session={session} />;
   if (active === "Verification") return <VerificationView vendor={vendor} setState={setState} session={session} />;
   if (active === "Catalog") return <Catalog vendor={vendor} state={state} setState={setState} session={session} />;
-  if (active === "Quote opportunities") return <VendorQuotes vendor={vendor} state={state} setState={setState} session={session} />;
+  if (active === "Food Drops") return <FoodDropsManager vendor={vendor} state={state} setState={setState} />;
+  if (active === "Food Shorts") return <VendorShortsManager vendor={vendor} products={state.products.filter((p) => p.vendorId === vendor.id && p.active)} shorts={shorts} />;
+  if (active === "Quote opportunities") return isLiveSupabaseMode() ? <LiveVendorRfqs vendor={vendor} /> : <VendorQuotes vendor={vendor} state={state} setState={setState} session={session} />;
   if (active === "Orders") return <OrdersV4 session={session} state={state} setState={setState} scope="vendor" vendor={vendor} />;
   if (active === "Delivery team") return <DeliveryTeam vendor={vendor} state={state} setState={setState} session={session} />;
   if (active === "Settlements") return <VendorSettlements vendor={vendor} state={state} />;
@@ -2045,7 +2343,7 @@ function OperationsArea({ active, session, state, setState }: { active: string; 
   if (active === "Vendor onboarding") return <OperationsOnboard session={session} state={state} setState={setState} />;
   if (active === "Vendor verification") return <OperationsVerification session={session} state={state} setState={setState} />;
   if (active === "Item pricing") return <ItemPricing session={session} state={state} setState={setState} />;
-  if (active === "RFQ desk") return <RFQDesk state={state} />;
+  if (active === "RFQ desk") return isLiveSupabaseMode() ? <LiveRfqDesk /> : <RFQDesk state={state} />;
   if (active === "Orders") return <OrdersV4 session={session} state={state} setState={setState} scope="operations" />;
   if (active === "Cancellations") return <Cancellations session={session} state={state} setState={setState} />;
   if (active === "Vendor payments") return <VendorPayments state={state} setState={setState} session={session} canManage />;
@@ -2167,8 +2465,8 @@ function AdminArea({ active, session, state, setState }: { active: string; sessi
 }
 function HomepageCampaigns({ session, state, setState }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
   const [busy, setBusy] = useState(false);
-  const [manualOpen, setManualOpen] = useState(false);
-  const [manual, setManual] = useState({ name: "", audience: "", offer: "", channel: "In-app" });
+  const [createOpen, setCreateOpen] = useState(false);
+  const [prefill, setPrefill] = useState<Partial<Campaign> | null>(null);
   const [suggestions, setSuggestions] = useState<Array<{ name: string; audience: string; offer: string; rationale: string; channel: string }>>([]);
   const eligibleProducts = state.products.filter((product) => product.active && product.stock > 0).slice(0, 80);
   const featured = state.merchandising.featuredProductIds;
@@ -2206,27 +2504,31 @@ function HomepageCampaigns({ session, state, setState }: { session: DemoSession;
     } catch (error) { toast.error(error instanceof Error ? error.message : "Campaign suggestions could not be generated"); }
     finally { setBusy(false); }
   }
-  async function createDraft(suggestion: { name: string; audience: string; offer: string; rationale: string; channel: string }) {
-    const draft: Campaign = { id: id("CMP"), name: suggestion.name, audience: suggestion.audience, offer: suggestion.offer, channel: suggestion.channel, status: "Draft", aiRationale: suggestion.rationale, createdAt: now() };
-    try {
-      let final = draft;
-      if (isLiveSupabaseMode()) { const liveId = await saveLiveCampaign({ name: draft.name, audience: draft.audience, offer: draft.offer, channel: draft.channel, status: draft.status, aiRationale: draft.aiRationale }); final = { ...draft, id: liveId }; }
-      setState((current) => ({ ...current, campaigns: [final, ...current.campaigns.filter((campaign) => campaign.id !== final.id)], audit: [audit(session, "Created campaign draft", `${final.name} · ${final.audience}`), ...current.audit] }));
-      toast.success("Campaign saved as a draft for human review");
-    } catch (error) { toast.error(error instanceof Error ? error.message : "Campaign could not be saved"); }
+  /** Save a campaign: to the database first in live mode (so a failure is never shown as saved), then to local data. */
+  async function saveCampaign(campaign: Campaign) {
+    const known = state.campaigns.some((item) => item.id === campaign.id);
+    let final = campaign;
+    if (isLiveSupabaseMode()) {
+      const liveId = await saveLiveCampaign({ id: known ? campaign.id : undefined, name: campaign.name, audience: campaign.audience, offer: campaign.offer, channel: campaign.channel, status: campaign.status, aiRationale: campaign.aiRationale, headline: campaign.headline, subline: campaign.subline, emoji: campaign.emoji, ctaLabel: campaign.ctaLabel, targetType: campaign.targetType, targetValue: campaign.targetValue, segment: campaign.segment, startsAt: campaign.startsAt, endsAt: campaign.endsAt, priority: campaign.priority });
+      final = { ...campaign, id: liveId };
+    }
+    setState((current) => ({ ...current, campaigns: known ? current.campaigns.map((item) => (item.id === campaign.id ? final : item)) : [final, ...current.campaigns], audit: [audit(session, known ? "Updated campaign" : "Created campaign", `${final.name} · ${final.status}`), ...current.audit] }));
   }
-  async function updateCampaign(campaign: Campaign, status: Campaign["status"]) {
+  async function setCampaignStatus(campaign: Campaign, status: Campaign["status"]) {
     const next = { ...campaign, status };
-    try { if (isLiveSupabaseMode()) await saveLiveCampaign({ id: campaign.id, name: campaign.name, audience: campaign.audience, offer: campaign.offer, channel: campaign.channel, status, aiRationale: campaign.aiRationale }); setState((current) => ({ ...current, campaigns: current.campaigns.map((item) => item.id === campaign.id ? next : item) })); toast.success(`Campaign ${status.toLowerCase()}`); }
-    catch (error) { toast.error(error instanceof Error ? error.message : "Campaign could not be updated"); }
+    if (isLiveSupabaseMode()) await saveLiveCampaign({ id: campaign.id, name: campaign.name, audience: campaign.audience, offer: campaign.offer, channel: campaign.channel, status, aiRationale: campaign.aiRationale, headline: campaign.headline || campaign.name, subline: campaign.subline, emoji: campaign.emoji, ctaLabel: campaign.ctaLabel, targetType: campaign.targetType, targetValue: campaign.targetValue, segment: campaign.segment, startsAt: campaign.startsAt, endsAt: campaign.endsAt, priority: campaign.priority });
+    setState((current) => ({ ...current, campaigns: current.campaigns.map((item) => item.id === campaign.id ? next : item), audit: [audit(session, status === "Active" ? "Campaign went live" : `Campaign ${status.toLowerCase()}`, campaign.name), ...current.audit] }));
   }
-  return <div className="space-y-7"><Heading eyebrow="MARKETPLACE GROWTH" title="Homepage & campaigns" body="Super Admin controls which products are featured on the customer marketplace, can create offers manually, and can ask AI to propose behaviour-based campaigns. AI never sends a campaign automatically; a human approves every activation." action={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setManualOpen(true)} className="rounded-xl"><Plus />Create campaign</Button><Button onClick={generateCampaigns} disabled={busy} className="rounded-xl bg-[#171914]"><Sparkles />{busy ? "Analysing…" : "AI suggest campaigns"}</Button></div>} />
+  async function removeCampaign(campaign: Campaign) {
+    if (isLiveSupabaseMode()) await deleteLiveCampaign(campaign.id);
+    setState((current) => ({ ...current, campaigns: current.campaigns.filter((item) => item.id !== campaign.id), audit: [audit(session, "Deleted campaign", campaign.name), ...current.audit] }));
+  }
+  return <div className="space-y-7"><Heading eyebrow="MARKETPLACE GROWTH" title="Homepage & campaigns" body="Super Admin controls which products are featured on the customer marketplace, can create offers manually, and can ask AI to propose behaviour-based campaigns. AI never sends a campaign automatically; a human approves every activation." action={<div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => { setPrefill(null); setCreateOpen(true); }} className="rounded-xl"><Plus />Create campaign</Button><Button onClick={generateCampaigns} disabled={busy} className="rounded-xl bg-[#171914]"><Sparkles />{busy ? "Analysing…" : "AI suggest campaigns"}</Button></div>} />
     {state.merchandisingError && <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertTriangle className="mt-0.5 size-5 shrink-0" /><div><b>Homepage merchandising is not connected to the database.</b><p className="mt-1 leading-5">Featuring a product will not save and featured products will not appear to customers until this is fixed. Ask an engineer to run <code className="rounded bg-red-100 px-1 py-0.5 font-mono text-xs">supabase/V4_6_AGENTIC_COMMERCE.sql</code> in the Supabase SQL Editor. Database says: “{state.merchandisingError}”.</p></div></div>}
     <div className="grid gap-5 xl:grid-cols-[1.15fr_.85fr]"><section className="surface-card rounded-[28px] p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-black">Customer home merchandising</h3><p className="mt-1 text-sm text-stone-500">Feature up to {state.merchandising.maxFeatured} active products. Featured products appear before algorithmic recommendations.</p></div><label className="flex items-center gap-2 rounded-full bg-[#f2f7eb] px-3 py-2 text-xs font-black text-[#50772a]"><Switch checked={state.merchandising.recommendationPopupEnabled} onCheckedChange={(value) => void saveHome({ ...state.merchandising, recommendationPopupEnabled: value })} />AI recommendation popup</label></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{eligibleProducts.map((product) => { const selected = featured.includes(product.id); const vendor = state.vendors.find((item) => item.id === product.vendorId); return <button key={product.id} data-testid="featured-toggle" onClick={() => toggleFeatured(product.id)} className={`rounded-[22px] border p-3 text-left transition ${selected ? "border-[#5f8f2d] bg-[#f2f7eb] ring-2 ring-[#5f8f2d]/10" : "bg-white hover:border-stone-300"}`}><div className="flex items-center gap-3"><div className="grid size-12 place-items-center overflow-hidden rounded-xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-0 flex-1"><div className="truncate font-black">{product.name}</div><div className="truncate text-xs text-stone-500">{vendor?.businessName || "Vendor"} · {money(finalPrice(product, state))}</div></div><span className={`grid size-6 place-items-center rounded-full ${selected ? "bg-[#5f8f2d] text-white" : "border"}`}>{selected ? <Check className="size-3" /> : <Plus className="size-3" />}</span></div></button>; })}</div>{!eligibleProducts.length && <Empty icon={ShoppingBag} title="No active products" body="Verify vendors and publish products before choosing homepage features." />}</section>
       <section className="surface-dark rounded-[28px] p-6 text-white"><Megaphone className="text-[#a8db69]" /><h3 className="mt-4 text-xl font-black">AI campaign guardrails</h3><p className="mt-2 text-sm leading-6 text-white/60">Campaign suggestions use commerce behaviour such as category affinity, purchase recency, frequency and budget bands. ShePlates does not ask AI to infer sensitive personal traits. Every draft requires Super Admin approval before activation.</p><div className="mt-5 space-y-2 text-xs text-white/70"><div className="rounded-xl bg-white/8 p-3">✓ Behavioural segmentation only</div><div className="rounded-xl bg-white/8 p-3">✓ Offers remain editable</div><div className="rounded-xl bg-white/8 p-3">✓ No automatic send or payment action</div></div></section></div>
-    {suggestions.length > 0 && <section><div className="flex items-end justify-between"><div><p className="text-xs font-black uppercase tracking-[.16em] text-[#5f8f2d]">AI suggestions</p><h3 className="mt-1 text-lg font-black">Campaign drafts to consider</h3></div><button onClick={() => setSuggestions([])} className="text-xs font-black text-stone-500">Clear suggestions</button></div><div className="mt-4 grid gap-4 lg:grid-cols-3">{suggestions.map((suggestion, index) => <div key={`${suggestion.name}-${index}`} className="surface-card rounded-[26px] p-5"><div className="flex items-center gap-2"><Sparkles className="size-4 text-[#5f8f2d]" /><Status>AI proposed</Status></div><h4 className="mt-3 text-lg font-black">{suggestion.name}</h4><div className="mt-4 space-y-3 text-sm"><Review label="Audience" value={suggestion.audience} /><Review label="Offer" value={suggestion.offer} /><Review label="Channel" value={suggestion.channel} /></div><p className="mt-4 rounded-xl bg-[#f8f5ef] p-3 text-xs leading-5 text-stone-600">{suggestion.rationale}</p><Button onClick={() => void createDraft(suggestion)} className="mt-4 w-full rounded-xl bg-[#5f8f2d]"><Plus />Save as draft</Button></div>)}</div></section>}
-    <section className="surface-card overflow-hidden rounded-[28px]"><div className="flex items-center justify-between p-5 pb-2"><div><h3 className="font-black">Campaign control</h3><p className="text-xs text-stone-500">Only activate after reviewing audience, offer, stock and fulfilment capacity.</p></div></div>{state.campaigns.length ? <Table><TableHeader><TableRow><TableHead>Campaign</TableHead><TableHead>Audience</TableHead><TableHead>Offer</TableHead><TableHead>Channel</TableHead><TableHead>Status</TableHead><TableHead>Control</TableHead></TableRow></TableHeader><TableBody>{state.campaigns.map((campaign) => <TableRow key={campaign.id}><TableCell><b>{campaign.name}</b><div className="mt-1 max-w-xs text-xs text-stone-500">{campaign.aiRationale}</div></TableCell><TableCell>{campaign.audience}</TableCell><TableCell>{campaign.offer}</TableCell><TableCell>{campaign.channel}</TableCell><TableCell><Status>{campaign.status}</Status></TableCell><TableCell><Select value={campaign.status} onValueChange={(value) => void updateCampaign(campaign, value as Campaign["status"])}><SelectTrigger className="w-28"><SelectValue /></SelectTrigger><SelectContent>{["Draft","Active","Paused"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></TableCell></TableRow>)}</TableBody></Table> : <div className="p-5"><Empty icon={Megaphone} title="No campaigns yet" body="Ask AI for responsible segment ideas or create a campaign after you identify a business need." /></div>}</section>
-    <Dialog open={manualOpen} onOpenChange={setManualOpen}><DialogContent className="rounded-[28px] sm:max-w-lg"><DialogHeader><DialogTitle className="text-xl font-black">Create campaign draft</DialogTitle><DialogDescription>Define a commerce-behaviour audience and offer. The campaign stays Draft until you explicitly activate it.</DialogDescription></DialogHeader><div className="space-y-4"><Field label="Campaign name"><input value={manual.name} onChange={(event) => setManual((current) => ({ ...current, name: event.target.value }))} className={inputClass} placeholder="Weekend breakfast discovery" /></Field><Field label="Audience"><Textarea value={manual.audience} onChange={(event) => setManual((current) => ({ ...current, audience: event.target.value }))} className="rounded-xl" placeholder="Customers who bought milk in the last 30 days but not breakfast products" /></Field><Field label="Offer"><input value={manual.offer} onChange={(event) => setManual((current) => ({ ...current, offer: event.target.value }))} className={inputClass} placeholder="₹50 off a breakfast bundle above ₹299" /></Field><Field label="Channel"><Select value={manual.channel} onValueChange={(value) => setManual((current) => ({ ...current, channel: value }))}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{["In-app","WhatsApp opt-in","Email opt-in","In-app + WhatsApp opt-in"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></Field><Button onClick={async () => { if (!manual.name.trim() || !manual.audience.trim() || !manual.offer.trim()) return toast.error("Add campaign name, audience and offer"); await createDraft({ ...manual, rationale: "Created manually by Super Admin for human-reviewed commerce targeting." }); setManual({ name: "", audience: "", offer: "", channel: "In-app" }); setManualOpen(false); }} className="h-11 w-full rounded-xl bg-[#5f8f2d]"><Check />Save draft</Button></div></DialogContent></Dialog>
+    {suggestions.length > 0 && <section><div className="flex items-end justify-between"><div><p className="text-xs font-black uppercase tracking-[.16em] text-[#5f8f2d]">AI suggestions</p><h3 className="mt-1 text-lg font-black">Campaign drafts to consider</h3></div><button onClick={() => setSuggestions([])} className="text-xs font-black text-stone-500">Clear suggestions</button></div><div className="mt-4 grid gap-4 lg:grid-cols-3">{suggestions.map((suggestion, index) => <div key={`${suggestion.name}-${index}`} className="surface-card rounded-[26px] p-5"><div className="flex items-center gap-2"><Sparkles className="size-4 text-[#5f8f2d]" /><Status>AI proposed</Status></div><h4 className="mt-3 text-lg font-black">{suggestion.name}</h4><div className="mt-4 space-y-3 text-sm"><Review label="Audience" value={suggestion.audience} /><Review label="Offer" value={suggestion.offer} /><Review label="Channel" value={suggestion.channel} /></div><p className="mt-4 rounded-xl bg-[#f8f5ef] p-3 text-xs leading-5 text-stone-600">{suggestion.rationale}</p><Button onClick={() => { setPrefill({ name: suggestion.name, offer: suggestion.offer, channel: suggestion.channel, aiRationale: suggestion.rationale }); setCreateOpen(true); }} className="mt-4 w-full rounded-xl bg-[#5f8f2d]"><Plus />Edit and use</Button></div>)}</div></section>}
+    <CampaignManager campaigns={state.campaigns} categories={MARKET_GROUPS.map((group) => group.key)} vendors={state.vendors.filter((v) => v.verification === "Verified").map((v) => ({ id: v.id, name: v.businessName }))} products={eligibleProducts.map((p) => ({ id: p.id, name: p.name, vendor: state.vendors.find((v) => v.id === p.vendorId)?.businessName || "Vendor" }))} createOpen={createOpen} onCreateOpenChange={setCreateOpen} prefill={prefill} onPrefillUsed={() => setPrefill(null)} onSave={saveCampaign} onStatus={setCampaignStatus} onDelete={removeCampaign} />
   </div>;
 }
 
@@ -2431,10 +2733,10 @@ function SheAgent({ open, setOpen, session, state, setState, navigate }: { open:
       const history = [...messages, userMessage].slice(-12).map((item) => ({ role: item.role, text: item.text, productIds: item.productIds || [] }));
       const response = await fetch("/api/agent", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ task: "commerce", message: text, context: scope, history, role: session.role }),
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ task: "commerce", message: text, context: isLiveSupabaseMode() ? undefined : scope, history, role: session.role }),
       });
-      const json = await response.json() as {
+      type AgentJson = {
         result?: {
           reply?: string;
           intent?: string;
@@ -2454,7 +2756,11 @@ function SheAgent({ open, setOpen, session, state, setState, navigate }: { open:
         };
         error?: string;
       };
-      if (!response.ok || !json.result) throw new Error(json.error || "She Agent is temporarily unavailable. Please try again shortly.");
+      const streamed = (response.headers.get("content-type") || "").includes("text/event-stream") && Boolean(response.body);
+      const json: AgentJson = streamed
+        ? await readAgentStream(response, (reply) => setMessages((current) => { const last = current[current.length - 1]; return last?.streaming ? [...current.slice(0, -1), { ...last, text: reply }] : [...current, { role: "agent", text: reply, streaming: true }]; })) as AgentJson
+        : await response.json() as AgentJson;
+      if ((!streamed && !response.ok) || !json.result) throw new Error(json.error || "She Agent is temporarily unavailable. Please try again shortly.");
       const result = json.result;
 
       if (session.role === "customer" && result.memoryUpdates?.length) {
@@ -2476,9 +2782,6 @@ function SheAgent({ open, setOpen, session, state, setState, navigate }: { open:
       const basketProducts = [...new Set(result.basketProductIds || [])].map((productId) => permittedProducts.get(productId)).filter((product): product is Product => Boolean(product)).slice(0, 8);
       const removeIds = new Set((result.removeProductIds || []).filter((productId) => permittedProducts.has(productId)));
 
-      if (basketProducts.length || removeIds.size) {
-        await syncAgentCart(basketProducts.map((product) => product.id), [...removeIds]);
-      }
 
       if (result.createTicket) {
         const vendor = session.role === "vendor" ? vendorFor(state, session) : undefined;
@@ -2517,9 +2820,15 @@ function SheAgent({ open, setOpen, session, state, setState, navigate }: { open:
       const basketTotal = result.intent === "recommend" && selectedProducts.length ? selectedProducts.reduce((sum, product) => sum + finalPrice(product, state), 0) : undefined;
       let reply = result.clarifyingQuestion?.trim() || result.reply?.trim() || "I couldn't complete that request just now. Please try again.";
       if (result.requiresPhoto && awaitingPhoto === null) reply = `${reply} You can attach the photo below.`;
-      setMessages((current) => [...current, { role: "agent", text: reply, productIds: productIds.length ? productIds : undefined, basketTotal, intent: result.intent }]);
+      setMessages((current) => [...current.filter((m) => !m.streaming), { role: "agent", text: reply, productIds: productIds.length ? productIds : undefined, basketTotal, intent: result.intent }]);
+      // The reply is already on screen. Saving the basket is a network round trip, so it must not hold the answer back.
+      setBusy(false);
+      if (basketProducts.length || removeIds.size) {
+        try { await syncAgentCart(basketProducts.map((product) => product.id), [...removeIds]); }
+        catch (error) { toast.error(error instanceof Error ? error.message : "Your basket could not be saved. Please try again"); }
+      }
     } catch (error) {
-      setMessages((current) => [...current, { role: "agent", text: error instanceof Error ? error.message : "She Agent is temporarily unavailable. Please try again shortly." }]);
+      setMessages((current) => [...current.filter((m) => !m.streaming), { role: "agent", text: error instanceof Error ? error.message : "She Agent is temporarily unavailable. Please try again shortly." }]);
     } finally {
       setBusy(false);
     }
@@ -2530,7 +2839,7 @@ function SheAgent({ open, setOpen, session, state, setState, navigate }: { open:
   return <div className="fixed inset-0 z-[70] sm:pointer-events-none"><button onClick={() => setOpen(false)} className="absolute inset-0 bg-[#111611]/35 backdrop-blur-[2px] sm:hidden" aria-label="Close She Agent" /><section className="sp-agent-panel pointer-events-auto absolute inset-x-0 bottom-0 flex h-[92dvh] flex-col overflow-hidden rounded-t-[30px] border border-white/60 bg-[#fbfcf8] shadow-[0_-20px_80px_rgba(17,22,17,.22)] sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(790px,calc(100vh-36px))] sm:w-[480px] sm:rounded-[32px] sm:shadow-[0_24px_90px_rgba(17,22,17,.28)]">
     <div className="relative overflow-hidden bg-[#131611] px-5 pb-5 pt-5 text-white"><div className="absolute -right-12 -top-16 size-44 rounded-full bg-[#6cab1b]/30 blur-3xl" /><div className="absolute -bottom-20 left-12 size-40 rounded-full bg-[#ef3d3d]/20 blur-3xl" /><div className="relative flex items-center gap-3"><div className="sp-agent-orb sp-agent-orb-large relative grid size-12 place-items-center rounded-[18px] text-white"><Activity className="size-5" /><span className="sp-agent-orb-status absolute -right-1 -top-1 size-3 rounded-full" /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="text-lg font-black">She Agent</h2><span className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[10px] font-black uppercase tracking-wider text-white/70">Commerce assistant</span></div><p className="mt-0.5 truncate text-xs text-white/55">{session.role === "customer" ? "Your local shopping copilot" : `${roleName[session.role]} copilot`}</p></div><button onClick={() => setOpen(false)} className="grid size-10 place-items-center rounded-full bg-white/10 transition hover:bg-white/15" aria-label="Close"><X className="size-4" /></button></div>{session.role === "customer" && <div className="relative mt-4 flex items-center gap-2 rounded-2xl border border-white/10 bg-white/8 px-3 py-2.5 text-xs"><ShoppingCart className="size-4 text-[#a9dc67]" /><span className="font-bold">Review basket</span><span className="text-white/45">{cartItems.length} item{cartItems.length === 1 ? "" : "s"}</span><span className="ml-auto font-black">{money(cartTotal)}</span>{cartItems.length > 0 && <button onClick={() => { navigate("Cart"); setOpen(false); }} className="rounded-lg bg-white px-2.5 py-1.5 font-black text-[#111611]">View</button>}</div>}</div>
     <div className="border-b border-stone-200/70 bg-white/80 px-5 py-3 text-[11px] font-semibold leading-5 text-stone-500 backdrop-blur"><ShieldCheck className="mr-1.5 inline size-3.5 text-[#5ba400]" />{scopeCopy} Sensitive payments, refunds and approvals remain human-confirmed.</div>
-    <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-5">{messages.length === 1 && session.role === "customer" && <div className="mb-5 grid grid-cols-2 gap-2">{[["Nearby now", "What products are available near me?"], ["Plan for me", "Plan something useful for me today"], ["Food preferences", "Show options that fit my preferences"], ["Track order", "Where is my next order?"]].map(([label, prompt]) => <button key={label} onClick={() => void send(prompt)} className="surface-card rounded-[22px] p-3 text-left transition hover:-translate-y-0.5 hover:border-[#6cab1b]/40 hover:shadow-md"><Sparkles className="size-4 text-[#5ba400]" /><div className="mt-2 text-xs font-black">{label}</div><div className="mt-1 text-[10px] leading-4 text-stone-400">{prompt}</div></button>)}</div>}<div className="space-y-4">{messages.map((item, index) => <div key={index} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[92%] ${item.role === "user" ? "rounded-[22px_22px_8px_22px] bg-[#171914] text-white shadow-[0_16px_36px_rgba(17,19,15,.18)]" : "rounded-[22px_22px_22px_8px] border border-stone-200/80 bg-white/96 text-stone-700 shadow-[0_16px_40px_rgba(35,26,21,.08)]"} px-4 py-3 text-sm leading-6`}><div>{item.text}</div>{item.productIds?.length ? <div className="mt-3 space-y-2">{item.productIds.map((productId) => { const product = state.products.find((p) => p.id === productId); const vendor = product ? state.vendors.find((v) => v.id === product.vendorId) : undefined; if (!product) return null; const inCart = state.cart.some((x) => x.customerEmail === session.email && x.productId === product.id); return <div key={product.id} className="surface-card-muted rounded-[22px] p-3"><div className="flex items-center gap-3"><div className="grid size-12 shrink-0 place-items-center rounded-2xl shadow-sm ring-1 ring-stone-100" style={{ background: categoryVisual(product.category).bg }}><ProductGlyph category={product.category} /></div><div className="min-w-0 flex-1"><div className="truncate text-xs font-black text-[#171312]">{product.name}</div><div className="mt-0.5 truncate text-[10px] text-stone-500">{vendor?.businessName || "Verified vendor"} · {product.baseUnit}</div><div className="mt-1 flex items-center gap-2"><span className="text-sm font-black text-[#171312]">{money(finalPrice(product, state))}</span><span className="text-[10px] font-bold text-[#5b9417]">{product.protein}g protein</span></div></div><button onClick={() => void addProduct(product.id)} className={`grid min-w-14 place-items-center rounded-xl px-2.5 py-2 text-[11px] font-black ${inCart ? "bg-[#e8f4da] text-[#477f00]" : "bg-[#ef3d3d] text-white"}`}>{inCart ? "Add +" : "+ Add"}</button></div></div>; })}{item.basketTotal !== undefined && <div className="flex items-center justify-between gap-2 pt-1"><span className="text-[11px] font-bold text-stone-400">Suggested total {money(item.basketTotal)}</span><button onClick={() => void addSuggestedBasket(item.productIds || [])} className="rounded-xl bg-[#171914] px-3 py-2 text-[11px] font-black text-white">Add suggested basket</button></div>}</div> : null}</div></div>)}{busy && <div className="flex justify-start"><div className="inline-flex items-center gap-2 rounded-[22px_22px_22px_8px] border border-stone-200/80 bg-white/96 px-4 py-3 text-sm text-stone-500 shadow-[0_14px_36px_rgba(35,26,21,.08)]"><span className="flex gap-1"><span className="size-1.5 animate-bounce rounded-full bg-[#6cab1b]" /><span className="size-1.5 animate-bounce rounded-full bg-[#6cab1b] [animation-delay:120ms]" /><span className="size-1.5 animate-bounce rounded-full bg-[#6cab1b] [animation-delay:240ms]" /></span>Working on the best options…</div></div>}<div ref={bottom} /></div></div>
+    <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-5">{messages.length === 1 && session.role === "customer" && <div className="mb-5 grid grid-cols-2 gap-2">{[["Nearby now", "What products are available near me?"], ["Plan for me", "Plan something useful for me today"], ["Food preferences", "Show options that fit my preferences"], ["Track order", "Where is my next order?"]].map(([label, prompt]) => <button key={label} onClick={() => void send(prompt)} className="surface-card rounded-[22px] p-3 text-left transition hover:-translate-y-0.5 hover:border-[#6cab1b]/40 hover:shadow-md"><Sparkles className="size-4 text-[#5ba400]" /><div className="mt-2 text-xs font-black">{label}</div><div className="mt-1 text-[10px] leading-4 text-stone-400">{prompt}</div></button>)}</div>}<div className="space-y-4">{messages.map((item, index) => <div key={index} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[92%] ${item.role === "user" ? "rounded-[22px_22px_8px_22px] bg-[#171914] text-white shadow-[0_16px_36px_rgba(17,19,15,.18)]" : "rounded-[22px_22px_22px_8px] border border-stone-200/80 bg-white/96 text-stone-700 shadow-[0_16px_40px_rgba(35,26,21,.08)]"} px-4 py-3 text-sm leading-6`}><div>{item.text}</div>{item.productIds?.length ? <div className="mt-3 space-y-2">{item.productIds.map((productId) => { const product = state.products.find((p) => p.id === productId); const vendor = product ? state.vendors.find((v) => v.id === product.vendorId) : undefined; if (!product) return null; const inCart = state.cart.some((x) => x.customerEmail === session.email && x.productId === product.id); return <div key={product.id} className="surface-card-muted rounded-[22px] p-3"><div className="flex items-center gap-3"><div className="grid size-12 shrink-0 place-items-center rounded-2xl shadow-sm ring-1 ring-stone-100" style={{ background: categoryVisual(product.category).bg }}><ProductGlyph category={product.category} /></div><div className="min-w-0 flex-1"><div className="truncate text-xs font-black text-[#171312]">{product.name}</div><div className="mt-0.5 truncate text-[10px] text-stone-500">{vendor?.businessName || "Verified vendor"} · {product.baseUnit}</div><div className="mt-1 flex items-center gap-2"><span className="text-sm font-black text-[#171312]">{money(finalPrice(product, state))}</span><span className="text-[10px] font-bold text-[#5b9417]">{product.protein}g protein</span></div></div><button onClick={() => void addProduct(product.id)} className={`grid min-w-14 place-items-center rounded-xl px-2.5 py-2 text-[11px] font-black ${inCart ? "bg-[#e8f4da] text-[#477f00]" : "bg-[#ef3d3d] text-white"}`}>{inCart ? "Add +" : "+ Add"}</button></div></div>; })}{item.basketTotal !== undefined && <div className="flex items-center justify-between gap-2 pt-1"><span className="text-[11px] font-bold text-stone-400">Suggested total {money(item.basketTotal)}</span><button onClick={() => void addSuggestedBasket(item.productIds || [])} className="rounded-xl bg-[#171914] px-3 py-2 text-[11px] font-black text-white">Add suggested basket</button></div>}</div> : null}</div></div>)}{busy && !messages.some((m) => m.streaming) && <div className="flex justify-start"><div className="inline-flex items-center gap-2 rounded-[22px_22px_22px_8px] border border-stone-200/80 bg-white/96 px-4 py-3 text-sm text-stone-500 shadow-[0_14px_36px_rgba(35,26,21,.08)]"><span className="flex gap-1"><span className="size-1.5 animate-bounce rounded-full bg-[#6cab1b]" /><span className="size-1.5 animate-bounce rounded-full bg-[#6cab1b] [animation-delay:120ms]" /><span className="size-1.5 animate-bounce rounded-full bg-[#6cab1b] [animation-delay:240ms]" /></span>Working on the best options…</div></div>}<div ref={bottom} /></div></div>
     <div className="border-t border-stone-200/80 bg-white/96 p-3.5 backdrop-blur sm:p-4"><input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(e) => { const file = e.target.files?.[0]; if (file) void handlePhotoSelected(file); e.target.value = ""; }} />{awaitingPhoto && <div className="mb-3 flex gap-2"><Button type="button" variant="outline" onClick={() => fileInputRef.current?.click()} className="flex-1 rounded-xl border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100"><ImageUp />Attach photo for {awaitingPhoto.orderId}</Button><Button type="button" variant="ghost" onClick={() => setAwaitingPhoto(null)} className="rounded-xl">Cancel</Button></div>}<div className="mb-3 flex gap-2 overflow-x-auto pb-1">{agentPrompts(session.role).map((prompt) => <button key={prompt} onClick={() => void send(prompt)} disabled={busy} className="whitespace-nowrap rounded-full border border-stone-200 bg-[#fafbf8] px-3 py-2 text-[11px] font-bold text-stone-600 transition hover:border-[#6cab1b]/40 hover:bg-[#f2f8e9]">{prompt}</button>)}</div><div className="flex items-end gap-2 rounded-[20px] border border-stone-200 bg-[#f8f9f6] p-2 focus-within:border-[#6cab1b]/50 focus-within:ring-4 focus-within:ring-[#6cab1b]/10"><Textarea value={message} onChange={(e) => setMessage(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} placeholder={session.role === "customer" ? "Ask naturally about food, products, orders or your plans…" : "Ask She Agent…"} className="min-h-10 max-h-28 resize-none border-0 bg-transparent px-2 py-2 shadow-none focus-visible:ring-0" /><Button onClick={() => void send()} disabled={busy || !message.trim()} className="size-10 shrink-0 rounded-xl bg-[#ef3d3d] p-0 hover:bg-[#d92f2f]" aria-label="Send"><Send className="size-4" /></Button></div><p className="mt-2 px-1 text-[10px] leading-4 text-stone-400">She Agent can prepare and modify a proposal. You confirm checkout, payment and sensitive actions.</p></div>
   </section></div>;
 }

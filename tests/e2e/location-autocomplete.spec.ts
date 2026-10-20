@@ -7,7 +7,7 @@ test.describe("Location autocomplete", () => {
     await dismissTourIfOpen(page);
 
     // Reach the delivery-location dialog from the marketplace toolbar.
-    const locationButton = page.locator('[data-tour="location"]');
+    const locationButton = page.locator('[data-tour="location"]:visible, [data-tour="location-mobile"]:visible').first();
     await locationButton.click();
     await expect(page.getByText("Confirm your delivery location")).toBeVisible();
 

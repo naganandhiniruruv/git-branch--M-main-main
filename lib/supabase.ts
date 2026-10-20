@@ -214,7 +214,7 @@ export async function loadLiveOperationsWorkspace() {
     supabase.from("profiles").select("id,full_name,role,vendor_id"),
     supabase.from("vendor_documents").select("vendor_id,document_number,storage_path,expiry_date,verification_status").order("created_at", { ascending: false }),
     supabase.from("platform_settings").select("config").eq("setting_key", "marketplace_home").maybeSingle(),
-    supabase.from("marketing_campaigns").select("id,name,audience,offer,channel,status,ai_rationale,created_at").order("created_at", { ascending: false }).limit(100),
+    supabase.from("marketing_campaigns").select("*").order("created_at", { ascending: false }).limit(100),
   ]);
   for (const result of [vendors, products, profiles, documents]) if (result.error) throw result.error;
   if (homeConfig.error) console.error("Homepage merchandising is unavailable:", homeConfig.error.message);
@@ -231,13 +231,30 @@ export async function saveLiveMarketplaceHome(config: { featuredProductIds: stri
   if (result.error) throw result.error;
 }
 
-export async function saveLiveCampaign(input: { id?: string; name: string; audience: string; offer: string; channel: string; status: string; aiRationale: string }) {
+export type CampaignSaveInput = {
+  id?: string; name: string; audience: string; offer: string; channel: string; status: string; aiRationale: string;
+  headline?: string; subline?: string; emoji?: string; ctaLabel?: string; targetType?: string; targetValue?: string;
+  segment?: string; startsAt?: string | null; endsAt?: string | null; priority?: number;
+};
+export async function saveLiveCampaign(input: CampaignSaveInput) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const row = { ...(input.id ? { id: input.id } : {}), name: input.name, audience: input.audience, offer: input.offer, channel: input.channel, status: input.status.toLowerCase(), ai_rationale: input.aiRationale, updated_at: new Date().toISOString() };
+  const details = input.headline === undefined ? {} : {
+    headline: input.headline.trim(), subline: (input.subline || "").trim(), emoji: input.emoji || "🎉", cta_label: (input.ctaLabel || "Shop now").trim() || "Shop now",
+    target_type: input.targetType || "none", target_value: input.targetType && input.targetType !== "none" ? input.targetValue || null : null,
+    segment: input.segment || "everyone", starts_at: input.startsAt || null, ends_at: input.endsAt || null, priority: Math.round(input.priority ?? 0),
+  };
+  const row = { ...(input.id ? { id: input.id } : {}), name: input.name, audience: input.audience, offer: input.offer, channel: input.channel, status: input.status.toLowerCase(), ai_rationale: input.aiRationale, ...details, updated_at: new Date().toISOString() };
   const result = await supabase.from("marketing_campaigns").upsert(row).select("id").single();
-  if (result.error) throw result.error;
+  if (result.error) throw new Error(/active_needs_headline/.test(result.error.message) ? "Write the headline customers will see before going live" : /window_check/.test(result.error.message) ? "The end must be after the start" : result.error.message);
   return result.data.id as string;
+}
+
+export async function deleteLiveCampaign(id: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.from("marketing_campaigns").delete().eq("id", id);
+  if (result.error) throw result.error;
 }
 
 export async function uploadLiveProductImage(vendorId: string, dataUrl: string) {
@@ -532,4 +549,131 @@ export async function updateLiveOrderStatus(orderId: string, status: string) {
 }
 export async function rescheduleLiveOrder(orderId: string, date: string, slot: string) {
   return commerceRequest({ action: "reschedule_order", orderId, date, slot });
+}
+
+// --- Taste Match (V8_1_TASTE_MATCH.sql) ---------------------------------
+// Best-effort throughout: a missing table (migration not yet applied) or a
+// transient error should degrade to "no taste data yet", never break the
+// marketplace someone is trying to browse.
+
+export async function loadLiveTasteProfile(customerId: string): Promise<{ weights: Record<string, number>; onboarded: boolean } | null> {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return null;
+  const result = await supabase.from("taste_profiles").select("weights,onboarded").eq("customer_id", customerId).maybeSingle();
+  if (result.error || !result.data) return null;
+  return { weights: (result.data.weights as Record<string, number>) || {}, onboarded: Boolean(result.data.onboarded) };
+}
+
+export async function saveLiveTasteProfile(customerId: string, weights: Record<string, number>, onboarded: boolean) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return;
+  await supabase.from("taste_profiles").upsert({ customer_id: customerId, weights, onboarded, updated_at: new Date().toISOString() }, { onConflict: "customer_id" });
+}
+
+export async function recordLiveTasteFeedback(customerId: string, productId: string | null, signal: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return;
+  await supabase.from("taste_feedback").insert({ customer_id: customerId, product_id: productId, signal });
+}
+
+export async function fetchLiveFoodAttributes(products: { id: string; name: string; category: string }[]): Promise<Record<string, Record<string, number>>> {
+  if (!products.length) return {};
+  try {
+    const token = await getAccessToken();
+    if (!token) return {};
+    const response = await fetch("/api/food-attributes", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ products }) });
+    if (!response.ok) return {};
+    const data = await response.json() as { attributes?: Record<string, Record<string, number>> };
+    return data.attributes || {};
+  } catch {
+    return {};
+  }
+}
+
+// --- Food Drops ----------------------------------------------------------
+// Row -> camelCase mapping only; the overselling guard itself lives in the
+// claim_food_drop() Postgres function (supabase/V8_2_FOOD_DROPS.sql), not
+// here — this file never decides whether a claim succeeds, it just calls
+// the RPC and surfaces whatever Postgres decided.
+type FoodDropRow = {
+  id: string; vendor_id: string; product_id: string; title: string; description: string | null;
+  drop_price: number; original_price: number; total_quantity: number; remaining_quantity: number;
+  starts_at: string; ends_at: string; status: "active" | "cancelled";
+};
+function mapFoodDropRow(row: FoodDropRow): import("@/lib/food-drops").FoodDrop {
+  return {
+    id: row.id, vendorId: row.vendor_id, productId: row.product_id, title: row.title,
+    description: row.description || undefined, dropPrice: Number(row.drop_price), originalPrice: Number(row.original_price),
+    totalQuantity: row.total_quantity, remainingQuantity: row.remaining_quantity,
+    startsAt: row.starts_at, endsAt: row.ends_at, status: row.status,
+  };
+}
+const FOOD_DROP_COLUMNS = "id,vendor_id,product_id,title,description,drop_price,original_price,total_quantity,remaining_quantity,starts_at,ends_at,status";
+
+/** Marketplace-facing: only drops a customer could plausibly still claim.
+ * Returns null (not []) when the list couldn't be fetched, so callers keep
+ * what they already have instead of blanking the screen on a network error. */
+export async function loadLiveFoodDrops(): Promise<import("@/lib/food-drops").FoodDrop[] | null> {
+  // Demo mode keeps its own sample drops and must never read (or be overwritten by) the real table.
+  if (!isLiveSupabaseMode()) return null;
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return null;
+  const result = await supabase.from("food_drops").select(FOOD_DROP_COLUMNS).eq("status", "active").gt("ends_at", new Date().toISOString()).order("ends_at", { ascending: true });
+  if (result.error || !result.data) return null;
+  return (result.data as FoodDropRow[]).map(mapFoodDropRow);
+}
+
+/** Vendor-facing: every drop this vendor has ever created, for management/history. */
+export async function loadLiveVendorFoodDrops(vendorId: string): Promise<import("@/lib/food-drops").FoodDrop[]> {
+  if (!isLiveSupabaseMode()) return [];
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) return [];
+  const result = await supabase.from("food_drops").select(FOOD_DROP_COLUMNS).eq("vendor_id", vendorId).order("created_at", { ascending: false });
+  if (result.error || !result.data) return [];
+  return (result.data as FoodDropRow[]).map(mapFoodDropRow);
+}
+
+export async function createLiveFoodDrop(input: {
+  vendorId: string; productId: string; title: string; description?: string;
+  dropPrice: number; originalPrice: number; totalQuantity: number; startsAt: string; endsAt: string;
+}): Promise<import("@/lib/food-drops").FoodDrop> {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.from("food_drops").insert({
+    vendor_id: input.vendorId, product_id: input.productId, title: input.title, description: input.description || null,
+    drop_price: input.dropPrice, original_price: input.originalPrice,
+    total_quantity: input.totalQuantity, remaining_quantity: input.totalQuantity,
+    starts_at: input.startsAt, ends_at: input.endsAt,
+  }).select(FOOD_DROP_COLUMNS).single();
+  if (result.error || !result.data) throw result.error || new Error("Drop could not be created");
+  return mapFoodDropRow(result.data as FoodDropRow);
+}
+
+export async function cancelLiveFoodDrop(dropId: string): Promise<void> {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.from("food_drops").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", dropId);
+  if (result.error) throw result.error;
+}
+
+/** The only write path for a claim — a thin wrapper around the atomic
+ * claim_food_drop() RPC. Throws with Postgres's own message ("sold out, has
+ * ended, or is no longer available") on any race/expiry/capacity failure so
+ * the caller can show it directly rather than trusting local stock math. */
+export async function claimLiveFoodDrop(dropId: string, quantity: number): Promise<import("@/lib/food-drops").FoodDropClaim> {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.rpc("claim_food_drop", { p_drop_id: dropId, p_quantity: quantity }).single();
+  if (result.error || !result.data) throw new Error(result.error?.message || "This drop could not be claimed");
+  const row = result.data as { id: string; drop_id: string; customer_id: string; quantity: number; unit_price: number; total_price: number; claimed_at: string };
+  return { id: row.id, dropId: row.drop_id, customerEmail: "", quantity: row.quantity, unitPrice: Number(row.unit_price), totalPrice: Number(row.total_price), claimedAt: row.claimed_at };
+}
+
+/** Vendor-facing claim history for a set of that vendor's own drops (analytics). */
+export async function loadLiveFoodDropClaims(dropIds: string[]): Promise<import("@/lib/food-drops").FoodDropClaim[]> {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase || !dropIds.length) return [];
+  const result = await supabase.from("food_drop_claims").select("id,drop_id,customer_id,quantity,unit_price,total_price,claimed_at").in("drop_id", dropIds).order("claimed_at", { ascending: false });
+  if (result.error || !result.data) return [];
+  return result.data.map((row) => ({ id: row.id as string, dropId: row.drop_id as string, customerEmail: "", quantity: row.quantity as number, unitPrice: Number(row.unit_price), totalPrice: Number(row.total_price), claimedAt: row.claimed_at as string }));
 }

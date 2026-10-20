@@ -6,6 +6,7 @@ try { process.loadEnvFile(".env.local"); } catch { /* fine without it — those 
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  testIgnore: "**/*.demo.spec.ts", // demo-mode specs run via playwright.demo.config.ts
   fullyParallel: false,
   workers: 1,
   retries: 0,

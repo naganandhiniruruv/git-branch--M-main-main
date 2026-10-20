@@ -15,10 +15,13 @@ test('v7 is a visual-only modern UI release', () => {
 });
 
 test('customer marketplace has modern semantic styling hooks', () => {
-  for (const hook of ['sp-marketplace','sp-market-toolbar','sp-category-strip','sp-category-chip','sp-product-card','sp-mobile-bottom-nav']) {
+  for (const hook of ['sp-marketplace','sp-market-toolbar','sp-product-card']) {
     assert.match(app, new RegExp(hook));
     assert.match(css, new RegExp(hook));
   }
+  // The category strip and floating bottom bar were replaced by the redesigned grid and tab bar.
+  assert.match(app, /<CategoryGrid/);
+  assert.match(css, /sp-mobile-bottom-nav/);
 });
 
 test('staff, modal, agent and onboarding surfaces share the v7 design system', () => {

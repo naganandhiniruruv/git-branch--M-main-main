@@ -9,13 +9,14 @@ const layout = fs.readFileSync(new URL('../app/layout.tsx', import.meta.url), 'u
 const manifest = fs.readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
-test('v6 exposes a native-style customer mobile navigation', () => {
-  assert.match(app, /sp-mobile-bottom-nav/);
-  assert.match(app, />Explore</);
-  assert.match(app, />Orders</);
-  assert.match(app, /sp-nav-agent/);
-  assert.match(app, />Cart</);
-  assert.match(app, />Account</);
+test('customer portal exposes a native-style mobile navigation with the six primary tabs', () => {
+  const shell = fs.readFileSync(new URL('../components/customer-v2/shell.tsx', import.meta.url), 'utf8');
+  assert.match(app, /<CustomerBottomNav/);
+  assert.match(app, /<CustomerTopNav/);
+  for (const tab of ['Maps', 'Marketplace', 'Schedules', 'Food Drops', 'Stories', 'Profile']) assert.match(shell, new RegExp(`key: "${tab}"`));
+  assert.match(shell, /md:hidden/); // bottom bar on phones only
+  assert.match(shell, /account-mobile/);
+  assert.match(shell, /Open She Agent/);
 });
 
 test('staff navigation remains collapsible and has a mobile overlay', () => {
