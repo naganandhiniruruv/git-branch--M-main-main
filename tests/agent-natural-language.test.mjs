@@ -16,7 +16,8 @@ test("She Agent routes customer language through semantic assistant reasoning", 
   assert.doesNotMatch(ui, /detectRecommendation/);
   assert.doesNotMatch(ui, /detectAddToCart/);
   assert.doesNotMatch(ui, /parseRupeeBudget/);
-  assert.match(ui, /body: JSON\.stringify\(\{ task: "commerce", message: text, context: scope, history, role: session\.role \}\)/);
+  // live mode never uploads the browser's copy of the data: the server loads the verified context itself
+  assert.match(ui, /body: JSON\.stringify\(\{ task: "commerce", message: text, context: isLiveSupabaseMode\(\) \? undefined : scope, history, role: session\.role \}\)/);
 
   assert.match(agent, /never depend on keyword, phrase, regex, or command matching/i);
   assert.match(agent, /intent: \{ type: "string", enum: \["browse", "recommend", "add_to_basket"/);

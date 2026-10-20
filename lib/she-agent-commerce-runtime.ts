@@ -359,8 +359,26 @@ function finalSchema(role: Role) {
   return { type: "object", additionalProperties: false, properties, required };
 }
 
-async function callResponses(apiKey: string, payload: Record<string, unknown>) {
-  const response = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+const apiBase = () => (process.env.AI_API_BASE || "https://api.openai.com/v1").replace(/\/$/, "");
+
+/** Latency settings for the reasoning model family: minimal reasoning effort and short answers. A shopping
+ * assistant that picks tools and writes two sentences does not need deep reasoning, and each reasoning
+ * token is waiting time for the customer. Models that do not accept the settings get the plain request. */
+let fastParamsSupported = true;
+function withFastParams(model: string, payload: Record<string, unknown>) {
+  if (!fastParamsSupported || !/^(gpt-5|o\d)/i.test(model) || process.env.AI_REASONING_EFFORT === "default") return payload;
+  const text = payload.text as Record<string, unknown> | undefined;
+  return { ...payload, reasoning: { effort: process.env.AI_REASONING_EFFORT || "minimal" }, ...(text ? { text: { ...text, verbosity: "low" } } : {}) };
+}
+function withoutFastParams(payload: Record<string, unknown>) {
+  const { reasoning, ...rest } = payload; void reasoning;
+  const text = rest.text as Record<string, unknown> | undefined;
+  if (text) { const { verbosity, ...t } = text; void verbosity; return { ...rest, text: t }; }
+  return rest;
+}
+
+async function postResponses(apiKey: string, payload: Record<string, unknown>) {
+  const response = await fetch(`${apiBase()}/responses`, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   const raw = await response.text();
   let data: OpenAIResponse = {};
   try { data = JSON.parse(raw) as OpenAIResponse; } catch { /* handled below */ }
@@ -371,6 +389,78 @@ async function callResponses(apiKey: string, payload: Record<string, unknown>) {
     throw error;
   }
   return data;
+}
+
+/** Pulls the text of the "reply" field out of a JSON document that is still being written. "reply" is the first
+ * property of the result schema, so its words arrive first. Handles escapes and stops at the closing quote. */
+export function extractPartialReply(partial: string): string {
+  const key = partial.indexOf('"reply"');
+  if (key < 0) return "";
+  const colon = partial.indexOf(":", key + 7);
+  const open = colon < 0 ? -1 : partial.indexOf('"', colon + 1);
+  if (open < 0) return "";
+  let out = "";
+  for (let i = open + 1; i < partial.length; i++) {
+    const ch = partial[i];
+    if (ch === '"') return out;
+    if (ch !== "\\") { out += ch; continue; }
+    const next = partial[i + 1];
+    if (next === undefined) return out;               // escape not finished yet
+    if (next === "u") { const hex = partial.slice(i + 2, i + 6); if (hex.length < 4) return out; out += String.fromCharCode(parseInt(hex, 16)); i += 5; continue; }
+    out += next === "n" ? "\n" : next === "t" ? "\t" : next; i += 1;
+  }
+  return out;
+}
+
+/** Same request, but read as a stream: text deltas are reported as they arrive and the finished response object
+ * is returned exactly as the non-streaming call would have returned it. */
+async function postResponsesStream(apiKey: string, payload: Record<string, unknown>, onText: (textSoFar: string) => void) {
+  const response = await fetch(`${apiBase()}/responses`, { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "text/event-stream" }, body: JSON.stringify({ ...payload, stream: true }) });
+  if (!response.ok || !response.body) {
+    const raw = await response.text();
+    let data: OpenAIResponse = {};
+    try { data = JSON.parse(raw) as OpenAIResponse; } catch { /* not json */ }
+    const error = new Error(data.error?.message || raw.slice(0, 500) || `Assistant request failed with ${response.status}`) as Error & { status?: number; code?: string };
+    error.status = response.status; error.code = data.error?.code;
+    throw error;
+  }
+  const reader = response.body.getReader(); const decoder = new TextDecoder();
+  let buffer = "", text = "", finished: OpenAIResponse | null = null;
+  const handle = (block: string) => {
+    const dataLine = block.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
+    if (!dataLine || dataLine === "[DONE]") return;
+    let event: { type?: string; delta?: string; response?: OpenAIResponse; error?: { message?: string; code?: string }; message?: string };
+    try { event = JSON.parse(dataLine); } catch { return; }
+    if (event.type === "response.output_text.delta" && typeof event.delta === "string") { text += event.delta; onText(text); }
+    else if (event.type === "response.completed") finished = event.response || null;
+    else if (event.type === "response.failed" || event.type === "error") {
+      const failure = new Error(event.response?.error?.message || event.error?.message || event.message || "The assistant stream failed") as Error & { code?: string };
+      failure.code = event.response?.error?.code || event.error?.code; throw failure;
+    }
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut: number;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) { handle(buffer.slice(0, cut)); buffer = buffer.slice(cut + 2); }
+  }
+  if (buffer.trim()) handle(buffer);
+  if (!finished) throw new Error("The assistant stream ended before a result arrived");
+  return finished as OpenAIResponse;
+}
+
+async function callResponses(apiKey: string, payload: Record<string, unknown>, onText?: (textSoFar: string) => void) {
+  const model = String(payload.model || "");
+  const fast = withFastParams(model, payload);
+  const send = (body: Record<string, unknown>) => (onText ? postResponsesStream(apiKey, body, onText) : postResponses(apiKey, body));
+  try { return await send(fast); }
+  catch (error) {
+    const typed = error as Error & { status?: number };
+    // a 400 that mentions the latency settings means this model rejects them: remember it and retry plainly
+    if (fast !== payload && typed.status === 400 && /reasoning|verbosity|unsupported|not supported|unknown parameter/i.test(typed.message)) { fastParamsSupported = false; return send(withoutFastParams(payload)); }
+    throw error;
+  }
 }
 
 function instructionsForRole(role: Role) {
@@ -387,12 +477,16 @@ export async function runToolDrivenCommerceAgent(args: {
   role: Role;
   message: string;
   history: AgentHistoryItem[];
-  context: Record<string, unknown>;
+  /** May still be loading: the first model call does not need it, only the tools do. */
+  context: Record<string, unknown> | Promise<Record<string, unknown>>;
+  /** Called with the reply text so far while the model is still writing it. */
+  onReply?: (replySoFar: string) => void;
 }) {
   const tools = toolsForRole(args.role);
   const instructions = instructionsForRole(args.role);
   const recent = args.history.slice(-12).map((item) => ({ role: item.role === "agent" ? "assistant" : "user", content: item.text, shown_product_ids: item.productIds || [] }));
   const schema = finalSchema(args.role);
+  const onText = args.onReply ? (textSoFar: string) => { const reply = extractPartialReply(textSoFar); if (reply) args.onReply?.(reply); } : undefined;
   const initialPayload = (model: string) => ({
     model,
     instructions,
@@ -405,20 +499,21 @@ export async function runToolDrivenCommerceAgent(args: {
   let activeModel = args.model || "gpt-5.6-luna";
   let response: OpenAIResponse;
   try {
-    response = await callResponses(args.apiKey, initialPayload(activeModel));
+    response = await callResponses(args.apiKey, initialPayload(activeModel), onText);
   } catch (error) {
     const typed = error as Error & { status?: number };
     const fallbackModel = "gpt-5.6-luna";
     if (activeModel !== fallbackModel && (typed.status === 400 || typed.status === 404)) {
       activeModel = fallbackModel;
-      response = await callResponses(args.apiKey, initialPayload(activeModel));
+      response = await callResponses(args.apiKey, initialPayload(activeModel), onText);
     } else throw error;
   }
 
   for (let round = 0; round < 6; round++) {
     const calls = functionCalls(response);
     if (!calls.length) break;
-    const outputs = calls.map((call) => ({ type: "function_call_output", call_id: call.callId, output: JSON.stringify(executeTool(args.role, args.context, call.name, call.args)) }));
+    const toolContext = await args.context;
+    const outputs = calls.map((call) => ({ type: "function_call_output", call_id: call.callId, output: JSON.stringify(executeTool(args.role, toolContext, call.name, call.args)) }));
     response = await callResponses(args.apiKey, {
       model: activeModel,
       previous_response_id: response.id,
@@ -428,7 +523,7 @@ export async function runToolDrivenCommerceAgent(args: {
       tool_choice: "auto",
       parallel_tool_calls: true,
       text: { format: { type: "json_schema", name: "sheplates_commerce_result", strict: true, schema } },
-    });
+    }, onText);
   }
 
   const refusal = extractRefusal(response);
