@@ -140,7 +140,7 @@ export function DiscoverCard({ people, onSetLocation }: { people: PeopleApi; onS
 
 export function FollowListDialog({ open, kind, onClose, people }: { open: boolean; kind: "followers" | "following"; onClose: () => void; people: PeopleApi }) {
   const list = usePeopleQuery(() => people.list(kind), [kind, open, people.mode, people.followCounts.followers, people.followCounts.following], open, 0);
-  const rows = list.rows.map((p) => ({ ...p, following: people.followingIds.has(p.id), requested: people.requestedIds.has(p.id) }));
+  const rows = list.rows.map((p) => ({ ...p, requested: people.requestedIds.has(p.id) }));
   return <Dialog open={open} onOpenChange={(v) => !v && onClose()}><DialogContent className="max-h-[85vh] overflow-y-auto rounded-[28px] sm:max-w-md">
     <DialogHeader><DialogTitle className="text-lg font-black">{kind === "followers" ? "Followers" : "Following"}</DialogTitle><DialogDescription>{kind === "followers" ? "Customers who follow you." : "Customers you follow. Vendors you follow are in Marketplace."}</DialogDescription></DialogHeader>
     {list.loading && !rows.length ? <p className="text-sm font-bold text-stone-500" role="status">Loading…</p>

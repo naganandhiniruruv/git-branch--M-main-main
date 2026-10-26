@@ -44,7 +44,7 @@ import {
   loadLiveTasteProfile, saveLiveTasteProfile, recordLiveTasteFeedback, fetchLiveFoodAttributes,
   loadLiveFoodDrops, loadLiveVendorFoodDrops, createLiveFoodDrop, cancelLiveFoodDrop, claimLiveFoodDrop, loadLiveFoodDropClaims,
   type LiveMarketplaceRow, type LiveMenuItemRow, type LiveVendorRow, type MarketplaceDiagnostics,
-} from "@/lib/supabase";
+ subscribeLiveNotifications,} from "@/lib/supabase";
 import {
   TASTE_SETUP_CHOICES, TASTE_DIMENSION_LABELS, tasteMatchScore, applyTasteSignal, weightsFromSetupChoices, inferAttributesLocally,
   type TasteWeights, type TasteSignal,
@@ -60,12 +60,13 @@ import { CategoryGrid, FoodDropsTab, MapsTab, PromoBanner, SchedulesTab, VendorR
 import { StoriesTab } from "@/components/customer-v2/stories";
 import { ShortsRail, ShortsViewer, useShortsViewer } from "@/components/customer-v2/shorts";
 import { VendorShortsManager } from "@/components/vendor/shorts-manager";
+import { VendorPeopleFollowers } from "@/components/vendor/people-followers";
 import { LiveCustomerRfqs, LiveRfqDesk, LiveVendorRfqs } from "@/components/rfq/live-rfq";
 import { publishRequirement } from "@/lib/rfq";
 import { CampaignBanner } from "@/components/customer-v2/campaigns";
 import { CampaignManager } from "@/components/admin/campaign-manager";
 import { recordCampaignEvent, useCampaignViewCounter, useCustomerCampaigns, type CampaignRecord, type LiveCampaign } from "@/lib/campaigns";
-import { usePeople } from "@/lib/people";
+import { usePeople, type PeopleApi } from "@/lib/people";
 import { useStatuses } from "@/lib/statuses";
 import { useFoodShorts, type FoodShort, type ShortsApi } from "@/lib/food-shorts";
 import { ProfileTab, VendorProfileDialog } from "@/components/customer-v2/profile";
@@ -147,7 +148,7 @@ type Assignment = { id: string; orderId: string; staffId: string; assignedAt: st
 type RequirementItem = { id: string; name: string; quantity: number; unit: string; brand: string };
 type Requirement = { id: string; customerEmail: string; title: string; deliveryDate: string; closingDate?: string; sourceFileName?: string; items: RequirementItem[]; status: "Draft" | "Quoting" | "Quotes received" | "Awarded"; invitedVendorIds?: string[] };
 type Quote = { id: string; requirementId: string; vendorId: string; total: number; deliveryFee: number; note: string; status: "Submitted" | "Selected" | "Not selected" };
-type Notification = { id: string; recipient: string; recipientRole: Role; title: string; body: string; at: string; read: boolean; href?: string };
+type Notification = { id: string; recipient: string; recipientRole: Role; title: string; body: string; at: string; read: boolean; href?: string; entityType?: string | null; entityId?: string | null };
 type Cancellation = { id: string; orderId: string; customerEmail: string; reason: string; aiDecision: string; confidence: number; status: "Awaiting operations" | "Approved" | "Rejected" | "Refunded"; kind?: "cancellation" | "quality_complaint"; recommendedRefundAmount?: number; attachmentName?: string };
 type Audit = { id: string; actor: string; action: string; detail: string; at: string };
 type CartItem = { id: string; customerEmail: string; productId: string; quantity: number };
@@ -334,13 +335,13 @@ const SESSION_KEY = "sheplates-v3-session";
 const roleName: Record<Role, string> = { customer: "Customer", vendor: "Vendor", operations: "Operations", admin: "Super admin" };
 const nav: Record<Role, string[]> = {
   customer: ["Marketplace", "Maps", "Schedules", "Food Drops", "Stories", "Profile", "Cart", "Wishlist", "My schedule", "Monthly requirement", "My quotations", "Orders", "Profile & food", "Ticket centre"],
-  vendor: ["Dashboard", "AI insights", "Online shop & POS", "Store & radius", "Verification", "Catalog", "Food Drops", "Food Shorts", "Quote opportunities", "Orders", "Delivery team", "Settlements", "Ticket centre"],
+  vendor: ["Dashboard", "AI insights", "Online shop & POS", "Store & radius", "Verification", "Catalog", "Food Drops", "Food Shorts", "Quote opportunities", "Orders", "Delivery team", "People followers", "Settlements", "Ticket centre"],
   operations: ["Command centre", "AI insights", "Vendor onboarding", "Vendor verification", "Store & radius", "Item pricing", "RFQ desk", "Orders", "Vendor payments", "Reports", "Ticket centre"],
   admin: ["Executive view", "AI insights", "Homepage & campaigns", "Users", "Vendors", "Vendor plans", "Pricing policies", "Vendor payments", "Reports", "Ticket centre", "Audit log"],
 };
 const navIcons: Record<string, typeof Store> = {
   Marketplace: ShoppingBag, Cart: ShoppingCart, Wishlist: Heart, "My schedule": CalendarDays, "Monthly requirement": ListChecks, "My quotations": ClipboardCheck,
-  Orders: Package, "Profile & food": HeartPulse, Dashboard: LayoutDashboard, "Store & radius": MapPin,
+  Orders: Package, "Profile & food": HeartPulse, Dashboard: LayoutDashboard, "Store & radius": MapPin, "People followers": Users,
   Verification: BadgeCheck, Catalog: ShoppingBag, "Online shop & POS": Building2, "Food Drops": Zap, "Food Shorts": Clapperboard, "Quote opportunities": ClipboardCheck, "Delivery team": Truck,
   "Command centre": LayoutDashboard, "Vendor onboarding": UserPlus, "Vendor verification": FileCheck2,
   "Item pricing": Percent, "RFQ desk": ClipboardCheck, "Executive view": LayoutDashboard,
@@ -798,7 +799,7 @@ export function ShePlatesV3() {
         if (!stopped) setState((current) => {
           const synced = mergeLiveCommerce(current, commerce, session);
           return { ...synced, notifications: [
-            ...rows.map((row) => ({ id: row.id, recipient: session.email, recipientRole: session.role, title: row.title, body: row.body, at: new Date(row.created_at).toLocaleString("en-IN"), read: Boolean(row.read_at) })),
+            ...rows.map((row) => ({ id: row.id, recipient: session.email, recipientRole: session.role, title: row.title, body: row.body, at: new Date(row.created_at).toLocaleString("en-IN"), read: Boolean(row.read_at), entityType: row.entity_type, entityId: row.entity_id })),
             ...synced.notifications.filter((item) => !notificationBelongsToSession(item, session) || item.id.startsWith("NOT-")),
           ].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index) };
         });
@@ -808,6 +809,53 @@ export function ShePlatesV3() {
     const timer = window.setInterval(refreshNotifications, 15000);
     return () => { stopped = true; window.clearInterval(timer); };
   }, [session]);
+  const notificationSessionUserId = session?.userId;
+  const notificationSessionEmail = session?.email;
+  const notificationSessionRole = session?.role;
+  useEffect(() => {
+    if (!notificationSessionUserId || !notificationSessionEmail || !notificationSessionRole || !isLiveSupabaseMode()) return;
+
+    const unsubscribe = subscribeLiveNotifications(
+      notificationSessionUserId,
+      () => {
+        void loadLiveNotifications()
+          .then((rows) => {
+            setState((current) => ({
+              ...current,
+              notifications: [
+                ...rows.map((row) => ({
+                  id: row.id,
+                  recipient: notificationSessionEmail,
+                  recipientRole: notificationSessionRole,
+                  title: row.title,
+                  body: row.body,
+                  at: new Date(row.created_at).toLocaleString("en-IN"),
+                  read: Boolean(row.read_at),
+                  entityType: row.entity_type,
+                  entityId: row.entity_id,
+                })),
+                ...current.notifications.filter(
+                  (item) =>
+                    item.recipientRole !== notificationSessionRole ||
+                    item.recipient.toLowerCase() !== notificationSessionEmail.toLowerCase() ||
+                    item.id.startsWith("NOT-"),
+                ),
+              ].filter(
+                (item, index, list) =>
+                  list.findIndex(
+                    (candidate) => candidate.id === item.id,
+                  ) === index,
+              ),
+            }));
+          })
+          .catch((error) => {
+            console.error("Real-time notification refresh failed:", error);
+          });
+      },
+    );
+
+    return unsubscribe;
+  }, [session, notificationSessionUserId, notificationSessionEmail, notificationSessionRole]);
   useEffect(() => {
     if (!hydrated || !session) return;
     if (!isLiveSupabaseMode()) { queueMicrotask(() => setLiveSync("ready")); return; }
@@ -938,7 +986,7 @@ export function ShePlatesV3() {
     if (active === "Maps") return <MapsTab state={state} profile={area} social={social} shorts={shorts} people={people} peopleRadius={peopleRadius} onPeopleRadius={setPeopleRadius} onOpenShorts={openShorts} locationConfirmed={hasPin} onOpenVendor={setVendorProfileId} onConfirmLocation={() => setActive("Marketplace")} />;
     if (active === "Food Drops") return <FoodDropsTab state={state} profile={area} social={social} onClaim={claimDrop} onRefresh={() => void refreshDrops()} />;
     if (active === "Stories") return <StoriesTab state={state} social={social} shorts={shorts} people={people} statuses={statuses} peopleRadius={peopleRadius} onPeopleRadius={setPeopleRadius} shortsRadius={shortsRadius} onShortsRadius={setShortsRadius} onOpenShorts={openShorts} hasPin={hasPin} onSetLocation={() => setActive("Marketplace")} userName={session!.name} onOpenVendor={setVendorProfileId} />;
-    if (active === "Profile") return <ProfileTab session={session!} state={state} setState={setState} social={social} people={people} statuses={statuses} onSetLocation={() => setActive("Marketplace")} onNavigate={setActive} onReplayTour={replayTour} onSignOut={signOut} />;
+    if (active === "Profile") return <ProfileTab session={session!} state={state} setState={setState} social={social} people={people} statuses={statuses} onSetLocation={() => setActive("Marketplace")} onOpenVendor={setVendorProfileId} onNavigate={setActive} onReplayTour={replayTour} onSignOut={signOut} />;
     if (active === "Schedules" || active === "Orders" || active === "My schedule") return <SchedulesTab initial={active === "My schedule" ? "Subscriptions" : "Orders"} orders={<OrdersV4 session={session!} state={state} setState={setState} scope="customer" />} subscriptions={<SchedulesV4 session={session!} state={state} setState={setState} navigate={setActive} />} />;
     return <CustomerArea active={active} session={session!} state={state} setState={setState} navigate={setActive} openAgent={() => setAgentOpen(true)} openVendor={setVendorProfileId} locationSignal={locationSignal} shorts={shorts} shortsRadius={shortsRadius} onShortsRadius={setShortsRadius} openShorts={openShorts} onSeeAllShorts={() => setActive("Stories")} />;
   }
@@ -1030,7 +1078,7 @@ export function ShePlatesV3() {
     <button data-tour="agent-desktop" onClick={() => setAgentOpen(true)} className={`${role === "customer" ? "sp-desktop-agent-launcher" : "sp-staff-agent-launcher"} sp-agent-launcher group fixed bottom-5 right-4 z-30 grid size-16 place-items-center rounded-full border border-white/70 bg-white/92 p-2 shadow-[0_22px_70px_rgba(17,22,17,.24)] backdrop-blur-xl transition hover:shadow-[0_28px_90px_rgba(17,22,17,.30)] sm:right-6`} aria-label="Open She Agent">
       <span className="sp-agent-orb relative grid size-12 place-items-center rounded-full text-white"><Activity className="size-5" /></span>
     </button>
-    <NotificationDrawerV4 open={notificationsOpen} setOpen={setNotificationsOpen} session={session} state={state} setState={setState} />
+    <NotificationDrawerV4 open={notificationsOpen} setOpen={setNotificationsOpen} session={session} state={state} setState={setState} people={people} />
     <SheAgent open={agentOpen} setOpen={setAgentOpen} session={session} state={state} setState={setState} navigate={setActive} />
     {tourOpen === "customer" && <ProductTour steps={CUSTOMER_TOUR_STEPS} onClose={finishTour} />}
     {tourOpen === "vendor" && <ProductTour steps={VENDOR_TOUR_STEPS} onClose={finishTour} />}
@@ -1148,7 +1196,7 @@ function CustomerOnboarding({ session, onSave, onLogout }: { session: DemoSessio
   const [step, setStep] = useState(1), [locating, setLocating] = useState(false), [mapBusy, setMapBusy] = useState(false);
   const [address, setAddress] = useState(""), [coords, setCoords] = useState<{ lat?: number; lng?: number }>({});
   const [household, setHousehold] = useState(2), [diet, setDiet] = useState("No preference"), [allergies, setAllergies] = useState<string[]>([]), [goals, setGoals] = useState<string[]>([]), [dislikes, setDislikes] = useState("");
-  const [privateAccount, setPrivateAccount] = useState(false);
+  const [privateAccount, setPrivateAccount] = useState(session.privateAccount ?? false);
   function detect() { if (!navigator.geolocation) return toast.error("Location is unavailable in this browser"); setLocating(true); navigator.geolocation.getCurrentPosition(async (position) => { const point = { lat: position.coords.latitude, lng: position.coords.longitude }; setCoords(point); setAddress(`GPS pin ${point.lat.toFixed(5)}, ${point.lng.toFixed(5)} — add flat/street details`); try { const place = await findLocation(point); setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); toast.success(`Actual GPS location detected (±${Math.round(position.coords.accuracy)} m)`); } catch (error) { toast.info(error instanceof Error ? `${error.message} The exact GPS pin is still saved.` : "The exact GPS pin is saved; add the street details."); } finally { setLocating(false); } }, () => { setLocating(false); toast.info("Allow precise location in Chrome, or search your full address manually"); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }); }
   async function locateAddress() { if (!address.trim()) return toast.error("Enter the delivery address first"); setMapBusy(true); try { const place = await findLocation({ address }); setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); toast.success("Address pinned on the map"); } catch (error) { toast.error(error instanceof Error ? error.message : "Address was not found"); } finally { setMapBusy(false); } }
   async function finish() { if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return toast.error("Detect your GPS location or find the typed address on the map first"); try { if (session.userId && process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured()) await saveLiveCustomerLocation({ userId: session.userId, address, latitude: coords.lat!, longitude: coords.lng! }); onSave({ email: session.email, address, latitude: coords.lat, longitude: coords.lng, householdSize: household, diet, allergies, goals, dislikes, onboardingComplete: true, privateAccount }); toast.success("Your food profile and exact service pin are ready"); } catch (error) { toast.error(error instanceof Error ? error.message : "Location could not be saved"); } }
@@ -2741,11 +2789,23 @@ function ReportsCentre({ state }: { state: V3State }) {
 }
 
 function NotificationDrawer({ open, setOpen, session, state, setState }: { open: boolean; setOpen: (v: boolean) => void; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) { const items = state.notifications.filter((item) => notificationBelongsToSession(item, session)); async function enable() { if (!("Notification" in window)) return toast.error("Notifications are unavailable in this browser"); const permission = await Notification.requestPermission(); if (permission === "granted") { new Notification("ShePlates notifications enabled", { body: "Order and schedule updates can now reach this device.", icon: "/sheplates-logo.png" }); toast.success("Device notifications enabled"); } else toast.info("Notification permission was not granted"); } return <Sheet open={open} onOpenChange={setOpen}><SheetContent className="sp-notification-sheet w-full p-0 sm:max-w-md"><SheetHeader className="border-b bg-[#111611] p-6 text-left text-white"><SheetTitle className="text-white">Notifications</SheetTitle><SheetDescription className="text-white/55">In-app updates plus optional device notifications for this installed web app.</SheetDescription></SheetHeader><div className="p-5"><Button onClick={enable} variant="outline" className="mb-5 w-full rounded-xl"><Bell />Enable device notifications</Button><button onClick={() => setState((s) => ({ ...s, notifications: s.notifications.map((item) => notificationBelongsToSession(item, session) ? { ...item, read: true } : item) }))} className="mb-3 text-xs font-black text-[#5ba400]">Mark all as read</button><div className="space-y-3">{items.map((item) => <div key={item.id} className={`rounded-2xl border p-4 ${item.read ? "bg-white" : "border-[#5ba400]/30 bg-[#f4faed]"}`}><div className="flex justify-between gap-3"><b className="text-sm">{item.title}</b>{!item.read && <span className="mt-1 size-2 rounded-full bg-[#ef3d3d]" />}</div><p className="mt-1 text-sm leading-6 text-stone-500">{item.body}</p><div className="mt-2 text-[11px] text-stone-400">{item.at}</div></div>)}{!items.length && <Empty icon={Bell} title="No notifications" body="Schedule, quote, verification and order updates will appear here." />}</div></div></SheetContent></Sheet>; }
-function NotificationDrawerV4({ open, setOpen, session, state, setState }: { open: boolean; setOpen: (v: boolean) => void; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
+function NotificationDrawerV4({ open, setOpen, session, state, setState, people }: { open: boolean; setOpen: (v: boolean) => void; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; people: PeopleApi }) {
   const items = state.notifications.filter((item) => notificationBelongsToSession(item, session));
+  const [busyRequest, setBusyRequest] = useState("");
   async function enable() { if (!("Notification" in window)) return toast.error("Notifications are unavailable in this browser"); const permission = await Notification.requestPermission(); if (permission === "granted") { new Notification("ShePlates notifications enabled", { body: "Verification, quote, schedule and tracking updates can reach this device.", icon: "/sheplates-logo.png" }); toast.success("Device notifications enabled"); } }
   async function markAll() { try { if (isLiveSupabaseMode()) await markLiveNotificationsRead(); setState((s) => ({ ...s, notifications: s.notifications.map((item) => notificationBelongsToSession(item, session) ? { ...item, read: true } : item) })); } catch (error) { toast.error(error instanceof Error ? error.message : "Notifications could not be updated"); } }
-  return <Sheet open={open} onOpenChange={setOpen}><SheetContent className="w-full overflow-hidden p-0 sm:max-w-md"><SheetHeader className="shrink-0 border-b bg-[#111611] p-6 text-left text-white"><SheetTitle className="text-white">Notifications</SheetTitle><SheetDescription className="text-white/55">Private updates for {session.email}. Vendor and customer events are never mixed.</SheetDescription></SheetHeader><div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5"><Button onClick={enable} variant="outline" className="mb-5 w-full rounded-xl"><Bell />Enable device notifications</Button><button onClick={() => void markAll()} className="mb-3 text-xs font-black text-[#5ba400]">Mark all as read</button><div className="space-y-3">{items.map((item) => <div key={item.id} className={`rounded-2xl border p-4 ${item.read ? "bg-white" : "border-[#5ba400]/30 bg-[#f4faed]"}`}><div className="flex justify-between gap-3"><b className="text-sm">{item.title}</b>{!item.read && <span className="mt-1 size-2 rounded-full bg-[#ef3d3d]" />}</div><p className="mt-1 text-sm leading-6 text-stone-500">{item.body}</p><div className="mt-2 text-[11px] text-stone-400">{item.at}</div></div>)}{!items.length && <Empty icon={Bell} title="No notifications" body="Verification, quote, schedule and order updates will appear here." />}</div></div></SheetContent></Sheet>;
+  async function respondToFollowRequest(item: Notification, accept: boolean) {
+    if (!item.entityId) return;
+    setBusyRequest(item.id);
+    try {
+      await people.resolveRequest(item.entityId, accept);
+      setState((current) => ({ ...current, notifications: current.notifications.map((notification) => notification.id === item.id ? { ...notification, read: true } : notification) }));
+      toast.success(accept ? "Follow request approved" : "Follow request declined");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Follow request could not be updated");
+    } finally { setBusyRequest(""); }
+  }
+  return <Sheet open={open} onOpenChange={setOpen}><SheetContent className="w-full overflow-hidden p-0 sm:max-w-md"><SheetHeader className="shrink-0 border-b bg-[#111611] p-6 text-left text-white"><SheetTitle className="text-white">Notifications</SheetTitle><SheetDescription className="text-white/55">Private updates for {session.email}. Vendor and customer events are never mixed.</SheetDescription></SheetHeader><div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5"><Button onClick={enable} variant="outline" className="mb-5 w-full rounded-xl"><Bell />Enable device notifications</Button><button onClick={() => void markAll()} className="mb-3 text-xs font-black text-[#5ba400]">Mark all as read</button><div className="space-y-3">{items.map((item) => <div key={item.id} className={`rounded-2xl border p-4 ${item.read ? "bg-white" : "border-[#5ba400]/30 bg-[#f4faed]"}`}><div className="flex justify-between gap-3"><b className="text-sm">{item.title}</b>{!item.read && <span className="mt-1 size-2 rounded-full bg-[#ef3d3d]" />}</div><p className="mt-1 text-sm leading-6 text-stone-500">{item.body}</p><div className="mt-2 text-[11px] text-stone-400">{item.at}</div>{session.role === "customer" && item.entityType === "customer_follow_request" && item.entityId && people.requests.some((request) => request.id === item.entityId) && <div className="mt-3 flex gap-2"><Button type="button" size="sm" disabled={busyRequest === item.id} onClick={() => void respondToFollowRequest(item, true)} className="rounded-full bg-[#e0194f] font-black text-white">Accept</Button><Button type="button" size="sm" variant="outline" disabled={busyRequest === item.id} onClick={() => void respondToFollowRequest(item, false)} className="rounded-full font-black">Decline</Button></div>}</div>)}{!items.length && <Empty icon={Bell} title="No notifications" body="Verification, quote, schedule and order updates will appear here." />}</div></div></SheetContent></Sheet>;
 }
 function notice(recipient: string, recipientRole: Role, title: string, body: string): Notification { return { id: id("NOT"), recipient, recipientRole, title, body, at: now(), read: false }; }
 function playNotificationSound() {

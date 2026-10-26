@@ -239,7 +239,6 @@ export function usePeople(user: PeopleUser, viewer: { latitude?: number; longitu
       if (res?.error) throw new Error(res.error.message);
       setRequests((current) => current.filter((request) => request.id !== id));
       if (accept) {
-        setRemoteFollowing((current) => new Set(current).add(id));
         setCounts((current) => ({ ...current, followers: current.followers + 1 }));
       }
       return;
@@ -265,8 +264,7 @@ export function usePeople(user: PeopleUser, viewer: { latitude?: number; longitu
     }
     writeRegistry(nextRegistry); setRegistry(nextRegistry);
     setRequests((current) => current.filter((request) => request.id !== id));
-    if (accept) persist({ ...localRef.current, following: [...new Set([...localRef.current.following, id])] });
-  }, [mode, myId, persist]);
+  }, [mode, myId]);
 
   /** Appear on (or leave) the map. Only a coarse position is stored, never the exact delivery pin. */
   const setDiscoverable = useCallback(async (on: boolean) => {
@@ -285,9 +283,9 @@ export function usePeople(user: PeopleUser, viewer: { latitude?: number; longitu
       if (res?.error) throw new Error(res.error.message);
       return ((res?.data || []) as Remote[]).map((r) => ({ ...fromRemote(r), followerCount: 0 }));
     }
-    const ids = kind === "following" ? local.following : Object.entries(registry).filter(([id, r]) => id !== myId && r.following.includes(myId)).map(([id]) => id);
-    return samples.filter((p) => ids.includes(p.id)).map((p) => ({ ...p, distanceKm: undefined, pin: undefined }));
-  }, [mode, local, samples, registry, myId]);
+    const ids = kind === "following" ? readLocal(email).following : Object.entries(registry).filter(([id, r]) => id !== myId && r.following.includes(myId)).map(([id]) => id);
+    return samples.filter((p) => ids.includes(p.id)).map((p) => ({ ...p, following: kind === "following" || p.following, distanceKm: undefined, pin: undefined }));
+  }, [mode, email, samples, registry, myId]);
 
   const refreshRequests = useCallback(async () => {
     if (mode === "remote") {

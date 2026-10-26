@@ -129,6 +129,13 @@ export async function liveSignUp(input: {
   return signedIn.data;
 }
 
+export async function saveLiveCustomerPrivacy(privateAccount: boolean) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.rpc("set_private_account", { p_private: privateAccount });
+  if (result.error) throw result.error;
+}
+
 export async function liveSignOut() {
   const supabase = getSupabaseBrowserClient();
   if (supabase) await supabase.auth.signOut();
@@ -381,6 +388,37 @@ export type LiveNotificationRow = {
   id: string; kind: string; title: string; body: string; entity_type: string | null;
   entity_id: string | null; read_at: string | null; created_at: string;
 };
+
+export function subscribeLiveNotifications(
+  userId: string,
+  onNotification: (notification: LiveNotificationRow) => void,
+) {
+  const supabase = getSupabaseBrowserClient();
+
+  if (!supabase || !userId) {
+    return () => {};
+  }
+
+  const channel = supabase
+    .channel(`notifications-${userId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "notifications",
+        filter: `recipient_id=eq.${userId}`,
+      },
+      (payload) => {
+        onNotification(payload.new as LiveNotificationRow);
+      },
+    )
+    .subscribe();
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+}
 
 export async function loadLiveNotifications() {
   const supabase = getSupabaseBrowserClient();

@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Toaster } from "@/components/ui/sonner";
 import { categories, categoryVisual, plans, vendors } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
-import { isSupabaseConfigured, liveSignIn, liveSignUp } from "@/lib/supabase";
+import { isSupabaseConfigured, liveSignIn, liveSignUp, saveLiveCustomerPrivacy } from "@/lib/supabase";
 
 type Audience = "customer" | "team";
 type AuthMode = "login" | "create";
@@ -21,12 +21,111 @@ type AuthMode = "login" | "create";
 // Kept in sync with STAFF_KEY / StaffAccount in sheplates-v3.tsx — a Super Admin
 // "Create user" without Supabase configured stores the account here so it can sign in.
 const LOCAL_STAFF_KEY = "sheplates-v3-staff-accounts";
+const LOCAL_CUSTOMER_KEY = "sheplates-v3-customer-accounts";
+const LOCAL_VENDOR_KEY = "sheplates-v3-vendor-accounts";
 type LocalStaffAccount = { email: string; name: string; role: "operations" | "admin"; password: string; active: boolean };
 function readLocalStaffAccount(email: string, password: string): LocalStaffAccount | null {
   try {
     const list = JSON.parse(localStorage.getItem(LOCAL_STAFF_KEY) || "[]") as LocalStaffAccount[];
     return list.find((account) => account.active !== false && account.email.toLowerCase() === email.trim().toLowerCase() && account.password === password) || null;
   } catch { return null; }
+}
+type LocalCustomerAccount = {
+  email: string;
+  name: string;
+  passwordSalt: string;
+  passwordHash: string;
+  privateAccount: boolean;
+  active: boolean;
+};
+function isLocalCustomerAccount(value: unknown): value is LocalCustomerAccount {
+  if (!value || typeof value !== "object") return false;
+  const account = value as Record<string, unknown>;
+  return typeof account.email === "string" &&
+    typeof account.name === "string" &&
+    typeof account.passwordSalt === "string" && /^[a-f\d]{32}$/i.test(account.passwordSalt) &&
+    typeof account.passwordHash === "string" && /^[a-f\d]{64}$/i.test(account.passwordHash) &&
+    typeof account.privateAccount === "boolean" &&
+    typeof account.active === "boolean";
+}
+function readLocalCustomerAccounts(): LocalCustomerAccount[] {
+  try {
+    const stored = localStorage.getItem(LOCAL_CUSTOMER_KEY);
+    if (!stored) return [];
+    const accounts: unknown = JSON.parse(stored);
+    if (!Array.isArray(accounts) || !accounts.every(isLocalCustomerAccount)) {
+      throw new Error("Saved local customer accounts have an invalid format.");
+    }
+    return accounts;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("invalid format")) throw error;
+    throw new Error("Saved local customer accounts could not be read. Check browser storage and try again.");
+  }
+}
+async function hashLocalAccountPassword(password: string, salt: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: Uint8Array.from(salt.match(/.{2}/g) || [], (byte) => parseInt(byte, 16)), iterations: 120_000, hash: "SHA-256" },
+    key,
+    256,
+  );
+  return Array.from(new Uint8Array(bits), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function newLocalAccountSalt() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function saveLocalCustomerAccounts(accounts: LocalCustomerAccount[]) {
+  try {
+    localStorage.setItem(LOCAL_CUSTOMER_KEY, JSON.stringify(accounts));
+  } catch {
+    throw new Error("This browser could not save the account. Check that site storage is enabled and try again.");
+  }
+}
+async function verifyLocalCustomerPassword(account: LocalCustomerAccount, password: string) {
+  return (await hashLocalAccountPassword(password, account.passwordSalt)) === account.passwordHash;
+}
+
+type LocalVendorAccount = {
+  email: string;
+  name: string;
+  passwordSalt: string;
+  passwordHash: string;
+  vendorId: string;
+  active: boolean;
+};
+function isLocalVendorAccount(value: unknown): value is LocalVendorAccount {
+  if (!value || typeof value !== "object") return false;
+  const account = value as Record<string, unknown>;
+  return typeof account.email === "string" &&
+    typeof account.name === "string" &&
+    typeof account.passwordSalt === "string" && /^[a-f\d]{32}$/i.test(account.passwordSalt) &&
+    typeof account.passwordHash === "string" && /^[a-f\d]{64}$/i.test(account.passwordHash) &&
+    typeof account.vendorId === "string" && account.vendorId.startsWith("local-") &&
+    typeof account.active === "boolean";
+}
+function readLocalVendorAccounts(): LocalVendorAccount[] {
+  try {
+    const stored = localStorage.getItem(LOCAL_VENDOR_KEY);
+    if (!stored) return [];
+    const accounts: unknown = JSON.parse(stored);
+    if (!Array.isArray(accounts) || !accounts.every(isLocalVendorAccount)) {
+      throw new Error("Saved local vendor accounts have an invalid format.");
+    }
+    return accounts;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("invalid format")) throw error;
+    throw new Error("Saved local vendor accounts could not be read. Check browser storage and try again.");
+  }
+}
+function saveLocalVendorAccounts(accounts: LocalVendorAccount[]) {
+  try {
+    localStorage.setItem(LOCAL_VENDOR_KEY, JSON.stringify(accounts));
+  } catch {
+    throw new Error("This browser could not save the account. Check that site storage is enabled and try again.");
+  }
+}
+async function verifyLocalVendorPassword(account: LocalVendorAccount, password: string) {
+  return (await hashLocalAccountPassword(password, account.passwordSalt)) === account.passwordHash;
 }
 
 function authErrorMessage(caught: unknown) {
@@ -145,7 +244,7 @@ export function ShePlatesEntry({ onLogin }: { onLogin: (session: DemoSession) =>
           <div className="relative mx-auto w-full max-w-162.5 lg:ml-auto">
             <div className="sp-entry-visual-glow" />
             <div className="sp-entry-visual">
-              <img src="/sheplates-hero.png" alt="Fresh vegetables, milk and homemade food" className="h-[370px] w-full object-cover sm:h-[520px]" />
+              <img src="/sheplates-hero.png" alt="Fresh vegetables, milk and homemade food" className="h-92.5 w-full object-cover sm:h-130" />
               <div className="sp-entry-visual-top"><span className="size-2 rounded-full bg-emerald-500" /> Live local marketplace</div>
               <div className="sp-entry-visual-card">
                 <div className="grid size-11 place-items-center rounded-[14px] bg-[#ebf7ef] text-[#238247]"><BadgeCheck className="size-5" /></div>
@@ -201,8 +300,10 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [privateAccount, setPrivateAccount] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const liveMode = process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured();
 
   function revealField(event: React.FocusEvent<HTMLInputElement>) {
     const element = event.currentTarget;
@@ -211,7 +312,7 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 
   useEffect(() => {
     if (!audience) return;
-    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); });
+    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); setPrivateAccount(false); });
   }, [audience]);
 
   if (!audience) return null;
@@ -220,23 +321,79 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      const liveMode = process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured();
       if (mode === "create") {
         if (!name.trim()) throw new Error("Enter your full name.");
         if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
         if (!liveMode) {
-          onLogin({ email, name: name.trim(), role: registrationRole, vendorId: registrationRole === "vendor" ? `local-${crypto.randomUUID().slice(0, 8)}` : undefined, isNewVendor: registrationRole === "vendor" });
-          toast.success(registrationRole === "vendor" ? "Vendor account created. Complete verification next." : "Customer account created.");
+          const normalizedEmail = email.trim().toLowerCase();
+          if (registrationRole === "customer") {
+            const accounts = readLocalCustomerAccounts();
+            if (accounts.some((account) => account.email.toLowerCase() === normalizedEmail) || demoAccounts.some((account) => account.email.toLowerCase() === normalizedEmail)) {
+              throw new Error("An account with this email already exists.");
+            }
+            const passwordSalt = newLocalAccountSalt();
+            accounts.push({
+              email: normalizedEmail,
+              name: name.trim(),
+              passwordSalt,
+              passwordHash: await hashLocalAccountPassword(password, passwordSalt),
+              privateAccount,
+              active: true,
+            });
+            saveLocalCustomerAccounts(accounts);
+          } else {
+            const accounts = readLocalVendorAccounts();
+            if (accounts.some((account) => account.email.toLowerCase() === normalizedEmail) ||
+              readLocalCustomerAccounts().some((account) => account.email.toLowerCase() === normalizedEmail) ||
+              demoAccounts.some((account) => account.email.toLowerCase() === normalizedEmail)) {
+              throw new Error("An account with this email already exists.");
+            }
+            const passwordSalt = newLocalAccountSalt();
+            const vendorId = `local-${crypto.randomUUID()}`;
+            accounts.push({
+              email: normalizedEmail,
+              name: name.trim(),
+              passwordSalt,
+              passwordHash: await hashLocalAccountPassword(password, passwordSalt),
+              vendorId,
+              active: true,
+            });
+            saveLocalVendorAccounts(accounts);
+            onLogin({ email: normalizedEmail, name: name.trim(), role: "vendor", vendorId, isNewVendor: true });
+            toast.success("Vendor account created. Complete verification next.");
+            return;
+          }
+          onLogin({ email: normalizedEmail, name: name.trim(), role: registrationRole, privateAccount: registrationRole === "customer" ? privateAccount : undefined });
+          toast.success("Customer account created.");
           return;
         }
         const result = await liveSignUp({ name: name.trim(), email, password, role: registrationRole });
-        onLogin({ email, name: name.trim(), role: registrationRole, userId: result.user?.id, isNewVendor: registrationRole === "vendor" });
+        if (registrationRole === "customer") {
+          try { await saveLiveCustomerPrivacy(privateAccount); }
+          catch (error) { toast.error(`Account created, but privacy could not be saved yet: ${authErrorMessage(error)}`); }
+        }
+        onLogin({ email, name: name.trim(), role: registrationRole, userId: result.user?.id, isNewVendor: registrationRole === "vendor", privateAccount: registrationRole === "customer" ? privateAccount : undefined });
         toast.success(registrationRole === "vendor" ? "Vendor account created. Complete onboarding next." : "Customer account created.");
         return;
       }
 
-      const demo = demoAccounts.find((account) => account.email === email && account.password === password);
       if (!liveMode) {
+        const normalizedEmail = email.trim().toLowerCase();
+        const localCustomer = readLocalCustomerAccounts().find((account) => account.active !== false && account.email.toLowerCase() === normalizedEmail);
+        if (localCustomer) {
+          if (!(await verifyLocalCustomerPassword(localCustomer, password))) throw new Error("The email or password is incorrect.");
+          if (audience !== "customer") throw new Error("Use Customer login for this account.");
+          onLogin({ email: localCustomer.email, name: localCustomer.name, role: "customer", privateAccount: localCustomer.privateAccount });
+          return;
+        }
+        const localVendor = readLocalVendorAccounts().find((account) => account.active && account.email.toLowerCase() === normalizedEmail);
+        if (localVendor) {
+          if (!(await verifyLocalVendorPassword(localVendor, password))) throw new Error("The email or password is incorrect.");
+          if (audience !== "team") throw new Error("Use Vendor / Team login for this account.");
+          onLogin({ email: localVendor.email, name: localVendor.name, role: "vendor", vendorId: localVendor.vendorId, isNewVendor: true });
+          return;
+        }
+        const demo = demoAccounts.find((account) => account.email.toLowerCase() === normalizedEmail && account.password === password);
         if (demo) {
           const permitted = audience === "customer" ? demo.role === "customer" : demo.role !== "customer";
           if (!permitted) throw new Error(audience === "customer" ? "Use Customer login for this account." : "Use Vendor / Team login for this account.");
@@ -249,7 +406,9 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
           onLogin({ email: staffAccount.email, name: staffAccount.name, role: staffAccount.role });
           return;
         }
-        throw new Error("Use one of the packaged demo credentials, or a team login created by Super Admin.");
+        throw new Error(audience === "customer"
+          ? "No local account found. Create a customer account here, or use a packaged demo account."
+          : "Use one of the packaged demo credentials, or a team login created by Super Admin.");
       }
       const live = await liveSignIn(email, password);
       const permitted = audience === "customer" ? live.profile.role === "customer" : live.profile.role !== "customer";
@@ -262,7 +421,8 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 
   return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="sp-auth-dialog max-h-[90vh] overflow-y-auto rounded-4xl p-0 sm:max-w-lg"><div className="sp-auth-hero bg-linear-to-r from-[#e55a41] via-[#ff845e] to-[#5f8f2d] p-6 text-white"><DialogHeader><DialogTitle className="text-lg font-black">{audience === "customer" ? "Customer access" : "Vendor / Team access"}</DialogTitle><DialogDescription className="text-white/75">{audience === "customer" ? "Discover, request quotes and track scheduled orders." : "Vendors, operations and super admins use this secure entry."}</DialogDescription></DialogHeader></div><div className="p-6">
     {audience === "customer" && <div className="grid grid-cols-2 rounded-2xl bg-stone-100 p-1"><button onClick={() => setMode("login")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "login" ? "bg-white shadow-sm" : "text-stone-500"}`}>Sign in</button><button onClick={() => setMode("create")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "create" ? "bg-white shadow-sm" : "text-stone-500"}`}>Create account</button></div>}
-    <form onSubmit={submit} className="sp-auth-form mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} onFocus={revealField} autoComplete="name" className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} onFocus={revealField} autoComplete="email" inputMode="email" className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onFocus={revealField} autoComplete={mode === "create" ? "new-password" : "current-password"} className="entry-input" /></InputField>{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<ArrowRight /></Button></form>
+    {mode === "create" && audience === "customer" && !liveMode && <div className="mt-4 rounded-xl bg-sky-50 p-3 text-xs leading-5 text-sky-900">This test account is saved in this browser only. Configure Supabase for secure sign-in across devices.</div>}
+    <form onSubmit={submit} className="sp-auth-form mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} onFocus={revealField} autoComplete="name" className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} onFocus={revealField} autoComplete="email" inputMode="email" className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onFocus={revealField} autoComplete={mode === "create" ? "new-password" : "current-password"} className="entry-input" /></InputField>{mode === "create" && audience === "customer" && <fieldset className="rounded-2xl border border-stone-200 p-4"><legend className="px-1 text-xs font-black uppercase tracking-wider text-stone-500">Account privacy</legend><p className="mb-3 text-xs leading-5 text-stone-500">Choose who can follow you. You can change this later in your profile.</p><div className="grid grid-cols-2 gap-2"><button type="button" aria-pressed={!privateAccount} onClick={() => setPrivateAccount(false)} className={`rounded-xl border p-3 text-left transition ${!privateAccount ? "border-[#e0194f] bg-[#fff0f4]" : "border-stone-200"}`}><span className="block text-sm font-black">Public</span><span className="mt-1 block text-xs text-stone-500">Customers can follow you directly.</span></button><button type="button" aria-pressed={privateAccount} onClick={() => setPrivateAccount(true)} className={`rounded-xl border p-3 text-left transition ${privateAccount ? "border-[#e0194f] bg-[#fff0f4]" : "border-stone-200"}`}><span className="block text-sm font-black">Private</span><span className="mt-1 block text-xs text-stone-500">Approve customer follow requests.</span></button></div></fieldset>}{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<ArrowRight /></Button></form>
     {audience === "team" && <button onClick={() => { setMode(mode === "login" ? "create" : "login"); setError(""); }} className="mt-4 w-full text-center text-sm text-stone-500">{mode === "login" ? <>Not a vendor? <span className="font-black text-[#ff4d18]">Be part of our vendor team</span></> : <>Already registered? <span className="font-black text-[#ff4d18]">Sign in</span></>}</button>}
   </div></DialogContent></Dialog>;
 }
