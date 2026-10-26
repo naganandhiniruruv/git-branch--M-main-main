@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { onlyConnectEnabled, uniqueById } from "./connect-map";
 import type { Role } from "./sheplates-data";
 
 let browserClient: SupabaseClient | null = null;
@@ -35,6 +36,7 @@ export type LiveVendorRow = {
   latitude: number | null; longitude: number | null; service_radius_km: number;
   delivery_enabled: boolean; pickup_enabled: boolean; store_open_today: boolean;
   verification_status: string; operational_status: string; marketplace_visible: boolean;
+  connect_enabled?: boolean; whatsapp_number?: string | null;
   plan_id: string | null;
   // Embedded via the vendors.plan_id -> vendor_plans foreign key. This client
   // has no generated Database types, so supabase-js can't confirm the FK is
@@ -205,10 +207,94 @@ export async function loadLiveMarketplace(latitude: number, longitude: number) {
   };
 }
 
+export interface ConnectVendor {
+  vendor_id: string;
+  vendor_name: string;
+  category: string;
+  description: string | null;
+  locality: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  whatsapp_number: string | null;
+  operating_hours: Record<string, unknown> | null;
+  logo_url: string | null;
+  distance_km: number;
+  service_radius_km: number;
+  store_open_today: boolean;
+}
+
+export function normalizeWhatsAppNumber(phone: string, defaultCountryCode = "+91"): string | null {
+  const trimmed = phone.trim();
+  if (!trimmed) return null;
+  const international = trimmed.startsWith("00") ? `+${trimmed.slice(2)}` : trimmed;
+  const digits = international.replace(/\D/g, "");
+  const normalized = international.startsWith("+")
+    ? `+${digits}`
+    : `${defaultCountryCode}${digits}`;
+  return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : null;
+}
+
+export type WhatsAppClickSource = "map" | "vendor_profile" | "search";
+
+export async function trackLiveVendorWhatsAppClick(
+  vendorId: string,
+  source: WhatsAppClickSource,
+) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase || !isLiveSupabaseMode()) {
+    throw new Error("Live WhatsApp click tracking is not available.");
+  }
+
+  const { error } = await supabase.rpc("track_vendor_whatsapp_click", {
+    target_vendor_id: vendorId,
+    click_source: source,
+  });
+  if (error) throw error;
+}
+
+export async function loadConnectVendorsNearby(
+  latitude: number,
+  longitude: number
+): Promise<ConnectVendor[]> {
+  const supabase = getSupabaseBrowserClient();
+
+  if (!supabase || !isLiveSupabaseMode()) {
+    throw new Error("Live Connect access is not available.");
+  }
+
+  const { data, error } = await supabase.rpc("connect_vendors_nearby", {
+    customer_lat: latitude,
+    customer_lng: longitude,
+  });
+
+  if (error) {
+    console.error("Failed to load Connect vendors:", error.message);
+    throw error;
+  }
+
+  const vendors = uniqueById((data ?? []) as ConnectVendor[], (vendor) => vendor.vendor_id);
+  if (!vendors.length) return [];
+
+  const activation = await supabase.from("vendors")
+    .select("id,connect_enabled")
+    .in("id", vendors.map((vendor) => vendor.vendor_id));
+  if (activation.error) {
+    console.error("Failed to verify Connect vendor activation:", activation.error.message);
+    throw activation.error;
+  }
+  const enabledVendorIds = new Set(
+    (activation.data || [])
+      .filter((vendor) => vendor.connect_enabled === true)
+      .map((vendor) => vendor.id),
+  );
+  return onlyConnectEnabled(vendors, enabledVendorIds);
+}
+
 export async function loadLiveVendorWorkspace(vendorId: string) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const vendorPromise = supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id,vendor_plans(code,name)").eq("id", vendorId).single();
+  const vendorPromise = supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,connect_enabled,whatsapp_number,plan_id,vendor_plans(code,name)").eq("id", vendorId).single();
   const documentsPromise = supabase.from("vendor_documents").select("document_number,storage_path,expiry_date,verification_status").eq("vendor_id", vendorId).order("created_at", { ascending: false }).limit(1);
   const productResult = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url,nutrition_status,nutrition_confidence,nutrition_note").eq("vendor_id", vendorId).order("created_at", { ascending: false });
   let productRows = productResult.data as LiveMenuItemRow[] | null;
@@ -218,11 +304,21 @@ export async function loadLiveVendorWorkspace(vendorId: string) {
     productRows = fallbackProducts.data as LiveMenuItemRow[] | null;
     productError = fallbackProducts.error;
   }
-  const [vendor, documents] = await Promise.all([vendorPromise, documentsPromise]);
+  const [initialVendor, documents] = await Promise.all([vendorPromise, documentsPromise]);
+  let vendor = initialVendor;
+  let connectCapabilityAvailable = true;
+  if (
+    vendor.error &&
+    (vendor.error.code === "42703" || vendor.error.code === "PGRST204") &&
+    /connect_enabled/i.test(vendor.error.message)
+  ) {
+    connectCapabilityAvailable = false;
+    vendor = await supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id,vendor_plans(code,name)").eq("id", vendorId).single();
+  }
   if (vendor.error) throw vendor.error;
   if (productError) throw productError;
   if (documents.error) throw documents.error;
-  return { vendor: vendor.data as LiveVendorRow, products: productRows || [], document: documents.data?.[0] || null };
+  return { vendor: vendor.data as LiveVendorRow, products: productRows || [], document: documents.data?.[0] || null, connectCapabilityAvailable };
 }
 
 export async function loadLiveOperationsWorkspace() {
@@ -364,6 +460,47 @@ export async function updateLiveVendorControls(vendorId: string, patch: {
   if (result.error) throw result.error;
 }
 
+export async function saveLiveVendorConnect(input: {
+  vendorId: string;
+  enabled: boolean;
+  whatsappNumber?: string;
+}) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+
+  let patch: { connect_enabled: boolean; whatsapp_number?: string };
+  if (input.enabled) {
+    const whatsappNumber = input.whatsappNumber
+      ? normalizeWhatsAppNumber(input.whatsappNumber)
+      : null;
+    if (!whatsappNumber) {
+      throw new Error("Enter a valid WhatsApp number in international format before enabling Connect.");
+    }
+    patch = { connect_enabled: true, whatsapp_number: whatsappNumber };
+  } else {
+    patch = { connect_enabled: false };
+  }
+
+  const result = await supabase.from("vendors")
+    .update(patch)
+    .eq("id", input.vendorId)
+    .select("id")
+    .maybeSingle();
+
+  if (result.error) {
+    if (
+      (result.error.code === "42703" || result.error.code === "PGRST204") &&
+      /connect_enabled/i.test(result.error.message)
+    ) {
+      throw new Error("Connect activation is unavailable until migration 20261026000400_connect_vendor_capability.sql is manually applied.");
+    }
+    throw result.error;
+  }
+  if (!result.data) {
+    throw new Error("The vendor could not be updated. Confirm you are signed in as this vendor owner or an authorized Operations/admin user.");
+  }
+}
+
 export async function saveLiveVendorPlan(vendorId: string, planCode: "launch" | "growth" | "premium") {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
@@ -481,9 +618,12 @@ export async function submitLiveVendorApplication(input: {
   userId: string; businessName: string; category: string; locality: string;
   fssaiNumber: string; expiryDate: string; certificate: File; address?: string;
   latitude?: number; longitude?: number; radiusKm?: number; delivery?: boolean; pickup?: boolean;
+  whatsappNumber?: string; operatingHours?: Record<string, unknown>;
 }) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const whatsappNumber = input.whatsappNumber ? normalizeWhatsAppNumber(input.whatsappNumber) : null;
+  if (input.whatsappNumber && !whatsappNumber) throw new Error("Enter a valid international WhatsApp number.");
   const safeName = input.certificate.name.replace(/[^a-zA-Z0-9._-]/g, "-");
   const objectPath = `${input.userId}/${crypto.randomUUID()}-${safeName}`;
   const upload = await supabase.storage.from("vendor-certificates").upload(objectPath, input.certificate, { upsert: false });
@@ -494,6 +634,8 @@ export async function submitLiveVendorApplication(input: {
     address: input.address ?? input.locality, latitude: input.latitude, longitude: input.longitude,
     service_radius_km: input.radiusKm ?? 5, delivery_enabled: input.delivery ?? true,
     pickup_enabled: input.pickup ?? true, store_open_today: false,
+    ...(whatsappNumber ? { whatsapp_number: whatsappNumber } : {}),
+    ...(input.operatingHours ? { operating_hours: input.operatingHours } : {}),
   }).select("id").single();
   if (vendor.error) throw vendor.error;
   const document = await supabase.from("vendor_documents").insert({

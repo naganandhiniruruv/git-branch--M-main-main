@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Circle, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { MapPin, ShoppingBag } from "lucide-react";
+import { uniqueValidMapPins } from "@/lib/connect-map";
 
 export type MapVendor = {
   id: string;
@@ -190,12 +191,14 @@ export function NearbyVendorsMap({
   // delta). It's driven only by the committed radius, so it stays fully
   // under Leaflet's control during a drag and only snaps once, on release.
   const committedHandlePoint = useMemo(() => pointAtDistanceNorth(customerLat, customerLng, radiusKm), [customerLat, customerLng, radiusKm]);
-  const placed = useMemo(() => spreadOverlaps(vendors), [vendors]);
-  const placedPeople = useMemo(() => spreadOverlaps(people || []), [people]);
+  const uniqueVendors = useMemo(() => uniqueValidMapPins(vendors), [vendors]);
+  const uniquePeople = useMemo(() => uniqueValidMapPins(people || []), [people]);
+  const placed = useMemo(() => spreadOverlaps(uniqueVendors), [uniqueVendors]);
+  const placedPeople = useMemo(() => spreadOverlaps(uniquePeople), [uniquePeople]);
   const closestId = useMemo(() => {
-    if (!vendors.length) return "";
-    return [...vendors].sort((a, b) => a.distanceKm - b.distanceKm)[0]?.id || "";
-  }, [vendors]);
+    if (!uniqueVendors.length) return "";
+    return [...uniqueVendors].sort((a, b) => a.distanceKm - b.distanceKm)[0]?.id || "";
+  }, [uniqueVendors]);
 
   return (
     <div className="sp-vendor-map relative overflow-hidden rounded-[26px] border border-stone-200/70">
@@ -268,7 +271,7 @@ export function NearbyVendorsMap({
       </MapContainer>
       <div className="absolute left-3 top-3 z-1000 flex items-center gap-1 rounded-full border border-white/70 bg-white/92 py-1 pl-3 pr-1 text-xs font-black text-[#171917] shadow-sm backdrop-blur">
         <MapPin className="size-3.5 shrink-0 text-[#c62653]" />
-        <span className="whitespace-nowrap" data-testid="map-count">{people ? `${radiusKm} km · ${people.length} ${people.length === 1 ? "person" : "people"} nearby` : `${radiusKm} km · ${vendors.filter((v) => v.distanceKm <= radiusKm).length} vendor${vendors.filter((v) => v.distanceKm <= radiusKm).length === 1 ? "" : "s"} in range`}</span>
+        <span className="whitespace-nowrap" data-testid="map-count">{people ? `${radiusKm} km · ${uniquePeople.length} ${uniquePeople.length === 1 ? "person" : "people"} nearby` : `${radiusKm} km · ${uniqueVendors.filter((v) => v.distanceKm <= radiusKm).length} vendor${uniqueVendors.filter((v) => v.distanceKm <= radiusKm).length === 1 ? "" : "s"} in range`}</span>
         <span className="ml-1 flex shrink-0 items-center gap-0.5">
           <button type="button" aria-label="Decrease radius" onClick={() => onRadiusChange(Math.max(1, radiusKm - 1))} className="grid size-6 place-items-center rounded-full bg-stone-100 text-sm font-black leading-none hover:bg-stone-200">−</button>
           <button type="button" aria-label="Increase radius" onClick={() => onRadiusChange(Math.min(30, radiusKm + 1))} className="grid size-6 place-items-center rounded-full bg-stone-100 text-sm font-black leading-none hover:bg-stone-200">+</button>
