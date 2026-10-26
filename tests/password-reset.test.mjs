@@ -39,7 +39,7 @@ test("Customer login view includes 'Forgot password?' link and handles reset req
   assert.match(entryComponent, /sendPasswordResetEmail/);
   
   // Check success state and back navigation
-  assert.match(entryComponent, /Reset link sent!/);
+  assert.match(entryComponent, /Password reset link sent!/);
   assert.match(entryComponent, /Back to customer sign in|Back to sign in/);
   
   // Check recovery URL detection on landing

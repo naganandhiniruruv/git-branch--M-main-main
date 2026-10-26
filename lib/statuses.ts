@@ -120,9 +120,7 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
   const feedItems = useMemo<Status[]>(() => {
     if (mode === "remote") {
       const seen = new Set(readSeen());
-      return remoteFeed
-        .filter((s) => isStatusActive(s, clock))
-        .map((s) => ({ ...s, viewed: seen.has(s.id) }));
+      return remoteFeed.filter((s) => isStatusActive(s, clock) && !seen.has(s.id));
     }
     if (mode !== "local") return [];
     const viewed = new Set(store.views[email.toLowerCase()] || []);
@@ -137,7 +135,7 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
     return [...sampleRows, ...real].flatMap((s) => {
       const person = people_.get(s.authorId);
       const following = people.followingIds.has(s.authorId);
-      const visible = statusVisibleTo({ authorId: s.authorId, viewerId: myLocalId, expiresAt: s.expiresAt, viewerFollowsAuthor: following, authorDiscoverable: Boolean(person?.discoverable), authorPrivateAccount: Boolean(person?.privateAccount), authorPin: person?.pin ?? null, viewerPin: pin, radiusKm, alreadyViewed: false }, clock);
+      const visible = statusVisibleTo({ authorId: s.authorId, viewerId: myLocalId, expiresAt: s.expiresAt, viewerFollowsAuthor: following, authorDiscoverable: Boolean(person?.discoverable), authorPrivateAccount: Boolean(person?.privateAccount), authorPin: person?.pin ?? null, viewerPin: pin, radiusKm, alreadyViewed: viewed.has(s.id) }, clock);
       if (!visible) return [];
       return [{ ...s, handle: person?.handle || s.handle, source: following ? "following" as const : "nearby" as const, distanceKm: person?.distanceKm, liked: liked.has(s.id), viewed: viewed.has(s.id), vendorName: s.vendorId ? vendors.find((v) => v.id === s.vendorId)?.businessName : undefined }];
     });
@@ -195,7 +193,7 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
   const markViewed = useCallback((id: string) => {
     if (mode === "remote") {
       rememberSeen(id);
-      setRemoteFeed((list) => list.map((s) => s.id === id ? { ...s, viewed: true } : s));
+      setRemoteFeed((list) => list.filter((s) => s.id !== id));
       void getSupabaseBrowserClient()?.rpc("mark_status_viewed", { p_status: id }).then((res) => { if (res?.error) console.warn("Could not record the view", res.error.message); });
       return;
     }

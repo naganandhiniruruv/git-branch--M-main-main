@@ -58,7 +58,7 @@ export function StatusRail({ mine, groups, onAdd, onOpenMine, onOpenGroup, name,
 }
 
 /** Full-screen viewer for one person's statuses, or your own. Watching counts as seen: each status can be
- * can be watched again until it expires. */
+ * watched once. */
 export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, loadViewers, onOpenVendor }: {
   items: (Status | MyStatus)[]; own: boolean; onClose: () => void; onViewed: (id: string) => void; onLike: (id: string, on: boolean) => Promise<void>; onDelete?: (id: string) => Promise<void>;
   loadViewers?: (id: string) => Promise<StatusViewer[]>; onOpenVendor?: (vendorId: string) => void;
@@ -126,7 +126,7 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
             <span className="inline-flex items-center gap-1.5" data-testid="status-own-likes"><Heart className="size-4" />{(current as MyStatus).likeCount}</span>
             {onDelete && <button type="button" aria-label="Delete this status" onClick={async () => { try { await onDelete(current.id); toast.success("Status deleted"); if (count <= 1) onClose(); else setIndex((i) => Math.max(0, i - 1)); } catch (e) { toast.error(e instanceof Error ? e.message : "Could not delete"); } }} className="ml-auto grid size-10 place-items-center rounded-full bg-white/20 backdrop-blur"><Trash2 className="size-4" /></button>}
           </div>
-          : <div className="flex items-center justify-between"><span className="text-[11px] font-bold text-white/70">You can watch this status again until it expires</span>
+          : <div className="flex items-center justify-between"><span className="text-[11px] font-bold text-white/70">Seen once, then gone for you</span>
               <button type="button" aria-label={liked ? "Unlike" : "Like"} onClick={() => void toggleLike()} className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-2 text-sm font-black backdrop-blur"><Heart className={`size-5 ${liked ? "fill-[#ff4d7a] text-[#ff4d7a]" : ""}`} /><span data-testid="status-likes">{likeCount}</span></button></div>}
         {seenBy && <div className="mt-3 max-h-40 overflow-y-auto rounded-2xl bg-black/55 p-3 text-xs backdrop-blur" data-testid="status-seen-by">{seenBy.length ? seenBy.map((v) => <div key={v.handle} className="flex justify-between py-1"><span className="font-black">@{v.handle}</span><span className="text-white/70">{v.liked ? "♥ " : ""}seen</span></div>) : <span className="text-white/70">Nobody has watched this yet.</span>}</div>}
       </div>
