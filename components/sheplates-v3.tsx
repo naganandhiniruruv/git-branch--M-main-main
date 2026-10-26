@@ -138,7 +138,7 @@ type Schedule = {
 };
 type Order = {
   id: string; scheduleId?: string; customerEmail: string; vendorId: string; productId?: string;
-  description: string; quantity: number; unit: string; total: number; date: string; slot: string;
+  description: string; quantity: number; unit: string; total: number; date: string; slot: string; deliveryAddress?: string;
   mode: DeliveryMode; status: "Scheduled" | "Confirmed" | "Preparing" | "Ready" | "Out for delivery" | "Ready for pickup" | "Completed" | "Cancellation requested" | "Cancelled";
   payment: "Pending" | "Paid" | "Reversal pending" | "Refunded";
   trackingLatitude?: number; trackingLongitude?: number; cancellationFee?: number;
@@ -571,6 +571,7 @@ function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot
       description: items.length ? items.map((item) => String(item.product_name || "Item")).join(", ") : String(row.order_number || "Order"),
       quantity: Number(first?.quantity || items.length || 1), unit: String(first?.unit || "items"), total: Number(row.customer_total || 0),
       date: String(row.scheduled_date || ""), slot: String(row.scheduled_slot || "Vendor to confirm"),
+      deliveryAddress: typeof row.delivery_address === "string" ? row.delivery_address : undefined,
       mode: String(row.fulfilment_mode) === "self_pickup" ? "Self pickup" : "Vendor delivery",
       status: liveOrderStatus(row.status), payment: livePaymentStatus(row.payments, row.status),
       trackingLatitude: row.tracking_latitude == null ? undefined : Number(row.tracking_latitude),
@@ -1648,9 +1649,17 @@ function CustomerProfileView({ session, state, setState }: { session: DemoSessio
 
 function CartView({ session, state, setState, navigate }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; navigate: (page: string) => void }) {
   const items = state.cart.filter((item) => item.customerEmail === session.email);
+  const customer = state.customers.find((item) => item.email === session.email);
+  const savedAddresses = customer?.addresses?.length
+    ? customer.addresses
+    : customer?.address ? [{ id: "default-address", label: "Home", address: customer.address, latitude: customer.latitude, longitude: customer.longitude, isDefault: true }] : [];
   const pendingOrders = state.orders.filter((item) => item.customerEmail === session.email && item.payment === "Pending" && item.status !== "Cancelled");
   const [paying, setPaying] = useState<Order | null>(null);
   const [savingCart, setSavingCart] = useState(false);
+  const [addressDialogOpen, setAddressDialogOpen] = useState(false);
+  const [selectedAddressId, setSelectedAddressId] = useState(savedAddresses.find((address) => address.isDefault)?.id || savedAddresses[0]?.id || "");
+  const [newAddress, setNewAddress] = useState("");
+  const [useNewAddress, setUseNewAddress] = useState(false);
   const total = items.reduce((sum, item) => { const product = state.products.find((x) => x.id === item.productId); return sum + (product ? finalPrice(product, state) * item.quantity : 0); }, 0);
   const singlePendingOrder = pendingOrders.length === 1 ? pendingOrders[0] : null;
   useEffect(() => { if (!paying && singlePendingOrder) queueMicrotask(() => setPaying(singlePendingOrder)); }, [paying, singlePendingOrder]);
@@ -1679,14 +1688,19 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
     try { await persistOwnCart(nextOwn); toast.success("Item removed from cart"); } catch { /* toast handled above */ }
   }
 
-  async function confirm() {
+  async function confirm(deliveryAddress: string) {
     if (!items.length || savingCart) return;
+    const address = deliveryAddress.trim();
+    if (!address) {
+      toast.error("Choose a saved delivery address or enter a new one.");
+      return;
+    }
     if (isLiveSupabaseMode()) {
       setSavingCart(true);
       try {
         // Sync first so carts created on another device / older build are reconciled before checkout.
         await syncLiveCart({ items: items.map((item) => ({ productId: item.productId, quantity: item.quantity })) });
-        const result = await checkoutLiveCart({ scheduledDate: tomorrow(), slot: "07:00–08:00 AM" });
+        const result = await checkoutLiveCart({ scheduledDate: tomorrow(), slot: "07:00–08:00 AM", deliveryAddress: address });
         const snapshot = result.snapshot as LiveCommerceStateSnapshot | undefined;
         if (!snapshot) throw new Error("Checkout did not return the latest order state.");
         const next = mergeLiveCommerce(state, snapshot, session);
@@ -1695,19 +1709,48 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
         const createdOrders = next.orders.filter((order) => ids.includes(order.id) && order.payment === "Pending");
         if (createdOrders.length === 1) setPaying(createdOrders[0]);
         toast.success(createdOrders.length > 1 ? `${createdOrders.length} vendor checkouts are ready for payment.` : "Checkout is ready for payment.");
+        setAddressDialogOpen(false);
       } catch (error) { toast.error(error instanceof Error ? error.message : "Checkout could not be created"); }
       finally { setSavingCart(false); }
       return;
     }
     const first = state.products.find((x) => x.id === items[0].productId); if (!first) return;
     const vendor = state.vendors.find((x) => x.id === first.vendorId);
-    const order: Order = { id: id("ORD"), customerEmail: session.email, vendorId: first.vendorId, description: items.map((item) => state.products.find((x) => x.id === item.productId)?.name).filter(Boolean).join(", "), quantity: items.reduce((sum, x) => sum + x.quantity, 0), unit: "packs", total, date: tomorrow(), slot: "07:00–08:00 AM", mode: vendor?.delivery ? "Vendor delivery" : "Self pickup", status: "Scheduled", payment: "Pending", cancellationFee: 0 };
+    const order: Order = { id: id("ORD"), customerEmail: session.email, vendorId: first.vendorId, description: items.map((item) => state.products.find((x) => x.id === item.productId)?.name).filter(Boolean).join(", "), quantity: items.reduce((sum, x) => sum + x.quantity, 0), unit: "packs", total, date: tomorrow(), slot: "07:00–08:00 AM", deliveryAddress: address, mode: vendor?.delivery ? "Vendor delivery" : "Self pickup", status: "Scheduled", payment: "Pending", cancellationFee: 0 };
     setState((current) => ({ ...current, orders: [order, ...current.orders], cart: current.cart.filter((item) => item.customerEmail !== session.email), notifications: [notice(session.email, "customer", "Checkout ready", `${order.description} is ready for payment.`), ...current.notifications] }));
+    setAddressDialogOpen(false);
     setPaying(order);
+  }
+  function continueWithAddress() {
+    const chosen = useNewAddress ? newAddress.trim() : savedAddresses.find((address) => address.id === selectedAddressId)?.address || "";
+    void confirm(chosen);
   }
   return <div className="space-y-6"><Heading eyebrow="CHECKOUT" title="Your cart" body="Your basket is saved with your account. She Agent, Marketplace and Cart all use the same basket, including when you switch devices." />
     {pendingOrders.length > 0 && <div className="space-y-3"><h3 className="text-lg font-black">Awaiting payment</h3>{pendingOrders.map((order) => <div key={order.id} className="surface-card flex flex-col gap-4 rounded-3xl border-l-4 border-l-amber-400 p-5 transition hover:-translate-y-0.5 hover:shadow-md sm:flex-row sm:items-center"><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-amber-50 text-amber-600"><Clock3 className="size-5" /></div><div className="min-w-0 flex-1"><b>{order.description}</b><div className="mt-1 text-sm text-stone-500">{order.date} · {order.slot} · {order.mode}</div><div className="mt-2 text-xl font-black">{money(order.total)}</div></div><Button onClick={() => setPaying(order)} className="rounded-xl bg-[#5ba400] transition hover:-translate-y-0.5 hover:shadow-lg"><CreditCard />Pay & place order</Button></div>)}</div>}
-    {items.length ? <div className="grid gap-5 lg:grid-cols-[1fr_340px]"><div className="space-y-3">{items.map((item) => { const product = state.products.find((x) => x.id === item.productId); if (!product) return null; return <div key={item.id} className="surface-card flex flex-wrap items-center gap-3 rounded-[22px] p-4 transition hover:-translate-y-0.5 hover:shadow-md sm:flex-nowrap sm:gap-4"><div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-35 flex-1"><b>{product.name}</b><div className="text-xs text-stone-500">{product.baseUnit} · {money(finalPrice(product, state))} each</div></div><div className="ml-auto flex items-center gap-2"><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, -1)}>−</Button><b className="min-w-6 text-center">{item.quantity}</b><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, 1)}>+</Button><button disabled={savingCart} onClick={() => void removeItem(item)} className="grid size-9 place-items-center rounded-xl hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button></div></div>; })}</div><div className="surface-dark h-fit rounded-[28px] p-6 text-white lg:sticky lg:top-6"><h3 className="text-xl font-black">Review basket</h3><Review label="Products" value={String(items.length)} /><Review label="Delivery" value={tomorrow()} /><Review label="Estimated total" value={money(total)} /><Button disabled={savingCart} onClick={() => void confirm()} className="mt-5 w-full rounded-xl bg-[#ef3d3d]"><CreditCard />{savingCart ? "Saving…" : "Continue to payment"}</Button></div></div> : pendingOrders.length === 0 ? <Empty icon={ShoppingCart} title="Your cart is empty" body="Ask She Agent to add products or add them from the marketplace. The same saved basket appears everywhere." /> : null}
+    {items.length ? <div className="grid gap-5 lg:grid-cols-[1fr_340px]"><div className="space-y-3">{items.map((item) => { const product = state.products.find((x) => x.id === item.productId); if (!product) return null; return <div key={item.id} className="surface-card flex flex-wrap items-center gap-3 rounded-[22px] p-4 transition hover:-translate-y-0.5 hover:shadow-md sm:flex-nowrap sm:gap-4"><div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-35 flex-1"><b>{product.name}</b><div className="text-xs text-stone-500">{product.baseUnit} · {money(finalPrice(product, state))} each</div></div><div className="ml-auto flex items-center gap-2"><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, -1)}>−</Button><b className="min-w-6 text-center">{item.quantity}</b><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, 1)}>+</Button><button disabled={savingCart} onClick={() => void removeItem(item)} className="grid size-9 place-items-center rounded-xl hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button></div></div>; })}</div><div className="surface-dark h-fit rounded-[28px] p-6 text-white lg:sticky lg:top-6"><h3 className="text-xl font-black">Review basket</h3><Review label="Products" value={String(items.length)} /><Review label="Delivery" value={tomorrow()} /><Review label="Estimated total" value={money(total)} /><Button disabled={savingCart} onClick={() => setAddressDialogOpen(true)} className="mt-5 w-full rounded-xl bg-[#ef3d3d]"><CreditCard />{savingCart ? "Saving…" : "Continue to payment"}</Button></div></div> : pendingOrders.length === 0 ? <Empty icon={ShoppingCart} title="Your cart is empty" body="Ask She Agent to add products or add them from the marketplace. The same saved basket appears everywhere." /> : null}
+    <Dialog open={addressDialogOpen} onOpenChange={setAddressDialogOpen}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto rounded-[28px] sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Choose a delivery address</DialogTitle>
+          <DialogDescription>Select a saved address or enter a new one before continuing to payment.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {savedAddresses.map((address) => (
+            <button type="button" key={address.id} aria-pressed={!useNewAddress && selectedAddressId === address.id} onClick={() => { setSelectedAddressId(address.id); setUseNewAddress(false); }} className={`w-full rounded-2xl border p-4 text-left transition ${!useNewAddress && selectedAddressId === address.id ? "border-[#5ba400] bg-[#f5faef]" : "border-stone-200 bg-white"}`}>
+              <span className="flex items-center justify-between gap-3"><span className="font-black">{address.label}{address.isDefault ? " · Default" : ""}</span><MapPin className="size-4 shrink-0 text-[#5f8f2d]" /></span>
+              <span className="mt-1 block text-sm text-stone-600">{address.address}</span>
+            </button>
+          ))}
+          <button type="button" aria-pressed={useNewAddress} onClick={() => setUseNewAddress(true)} className={`w-full rounded-2xl border p-4 text-left font-black ${useNewAddress ? "border-[#5ba400] bg-[#f5faef]" : "border-stone-200 bg-white"}`}>
+            <span className="flex items-center gap-2"><Plus className="size-4" /> Use a new address</span>
+          </button>
+          {useNewAddress && <Field label="New delivery address"><Textarea autoFocus value={newAddress} onChange={(event) => setNewAddress(event.target.value)} placeholder="Flat, street, landmark, area, city and PIN" className="min-h-24 rounded-xl" /></Field>}
+        </div>
+        <Button disabled={savingCart || (useNewAddress ? !newAddress.trim() : !savedAddresses.some((address) => address.id === selectedAddressId))} onClick={continueWithAddress} className="w-full rounded-xl bg-[#ef3d3d]">
+          <CreditCard />{savingCart ? "Saving…" : "Continue to payment"}
+        </Button>
+      </DialogContent>
+    </Dialog>
     <PaymentDialog order={paying} close={() => setPaying(null)} state={state} setState={setState} onPaid={() => navigate(paying?.scheduleId ? "My schedule" : "Orders")} />
   </div>;
 }
@@ -2157,7 +2200,7 @@ function PaymentDialog({ order, close, state, setState, onPaid }: { order: Order
   }
   return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="rounded-[26px] sm:max-w-md"><DialogHeader><DialogTitle className="text-xl font-black">Pay for {order.id}</DialogTitle><DialogDescription>Simulated secure checkout for this environment. Confirming here records a real transaction and schedules the vendor payout — no external gateway is charged.</DialogDescription></DialogHeader>
     <div className="space-y-4">
-      <div className="rounded-2xl bg-[#f6f8f2] p-4 text-sm"><Review label="Order" value={order.description} /><Review label="Vendor" value={vendor?.businessName || "—"} /><Review label="Amount payable" value={money(order.total)} /></div>
+      <div className="rounded-2xl bg-[#f6f8f2] p-4 text-sm"><Review label="Order" value={order.description} /><Review label="Vendor" value={vendor?.businessName || "—"} /><Review label="Delivery address" value={order.deliveryAddress || "Not provided"} /><Review label="Amount payable" value={money(order.total)} /></div>
       <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Payment method</div><div className="grid grid-cols-3 gap-2">{(["UPI", "Card", "Net banking"] as const).map((item) => <button type="button" key={item} onClick={() => setMethod(item)} className={`rounded-xl border p-3 text-sm font-black ${method === item ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : ""}`}>{item}</button>)}</div></div>
       <Button onClick={() => void pay()} disabled={busy} className="h-12 w-full rounded-xl bg-[#5ba400] font-black hover:bg-[#4c8c00]"><CreditCard />{busy ? "Processing…" : `Pay ${money(order.total)}`}</Button>
       <p className="text-[11px] leading-5 text-stone-400">A {PLATFORM_COMMISSION_PERCENT}% platform commission is retained; the rest is scheduled to reach the vendor {PAYOUT_CYCLE_DAYS} days after collection.</p>

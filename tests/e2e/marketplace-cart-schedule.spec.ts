@@ -23,6 +23,11 @@ test.describe("Marketplace — Add to Cart and Schedule are independent", () => 
     await page.waitForTimeout(800); // cart sync round-trip
     const after = (await cartButton.textContent()) || "";
     expect(after).not.toBe(before);
+
+    await cartButton.click();
+    await page.getByRole("button", { name: "Continue to payment" }).click();
+    await expect(page.getByRole("dialog")).toContainText("Choose a delivery address");
+    await expect(page.getByRole("dialog")).toContainText("Use a new address");
   });
 
   test("Plan opens a schedule dialog independent of the cart, and states the payment-gating rule", async ({ page }) => {

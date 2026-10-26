@@ -141,6 +141,45 @@ export async function liveSignOut() {
   if (supabase) await supabase.auth.signOut();
 }
 
+export function getAppUrl() {
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5173";
+}
+
+export async function sendPasswordResetEmail(email: string, redirectTo?: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to send password reset emails.");
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("Enter a valid email address.");
+  }
+  const defaultRedirect = `${getAppUrl().replace(/\/$/, "")}/reset-password`;
+  const targetRedirect = redirectTo || defaultRedirect;
+  const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+    redirectTo: targetRedirect,
+  });
+  // Do NOT surface Supabase errors (rate limit, user not found, etc.) to the UI.
+  // For security and UX, always show the success banner so we don't leak whether
+  // an account exists for a given email, and so transient limits don't confuse users.
+  void error;
+  return { success: true, email: normalizedEmail };
+}
+
+export async function updatePassword(newPassword: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to update passwords.");
+  if (!newPassword || newPassword.length < 8) {
+    throw new Error("Use a password with at least 8 characters.");
+  }
+  const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) {
+    throw new Error(error.message || "Could not update your password. The reset link may have expired or is invalid.");
+  }
+  return data;
+}
+
 export async function getAccessToken() {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) return null;
@@ -580,7 +619,7 @@ export async function syncLiveCart(input: { items: Array<{ productId: string; qu
   return commerceRequest({ action: "sync_cart", items: input.items, createdBy: input.createdBy || "customer" });
 }
 
-export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string }) {
+export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string; deliveryAddress?: string }) {
   return commerceRequest({ action: "checkout_cart", ...(input || {}) });
 }
 

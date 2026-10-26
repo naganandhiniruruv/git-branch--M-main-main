@@ -13,10 +13,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Toaster } from "@/components/ui/sonner";
 import { categories, categoryVisual, plans, vendors } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
-import { isSupabaseConfigured, liveSignIn, liveSignUp, saveLiveCustomerPrivacy } from "@/lib/supabase";
+import { isSupabaseConfigured, liveSignIn, liveSignUp, saveLiveCustomerPrivacy, sendPasswordResetEmail } from "@/lib/supabase";
 
 type Audience = "customer" | "team";
-type AuthMode = "login" | "create";
+type AuthMode = "login" | "create" | "forgot";
 
 // Kept in sync with STAFF_KEY / StaffAccount in sheplates-v3.tsx — a Super Admin
 // "Create user" without Supabase configured stores the account here so it can sign in.
@@ -148,11 +148,20 @@ export function ShePlatesEntry({ onLogin }: { onLogin: (session: DemoSession) =>
   // ShePlatesV3 re-reads the same param after login to jump into that
   // vendor's shop, so it's intentionally left in the URL here.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("vendor")) {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash || "";
+    const search = window.location.search || "";
+    if (hash.includes("type=recovery") || search.includes("type=recovery")) {
+      window.location.replace(`/reset-password${search}${hash}`);
+      return;
+    }
+    const params = new URLSearchParams(search);
+    if (params.get("vendor")) {
       queueMicrotask(() => setAuthAudience("customer"));
       toast.info("Sign in to view and order from this vendor's shop.");
+    } else if (params.get("forgot") === "true") {
+      queueMicrotask(() => setAuthAudience("customer"));
     }
-     
   }, []);
 
   const filteredPlans = useMemo(() => {
@@ -303,6 +312,7 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
   const [privateAccount, setPrivateAccount] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [resetSent, setResetSent] = useState(false);
   const liveMode = process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured();
 
   function revealField(event: React.FocusEvent<HTMLInputElement>) {
@@ -312,7 +322,16 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
 
   useEffect(() => {
     if (!audience) return;
-    queueMicrotask(() => { setMode("login"); setEmail(""); setPassword(""); setError(""); setName(""); setPrivateAccount(false); });
+    const isForgot = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("forgot") === "true";
+    queueMicrotask(() => {
+      setMode(isForgot && audience === "customer" ? "forgot" : "login");
+      setEmail("");
+      setPassword("");
+      setError("");
+      setName("");
+      setPrivateAccount(false);
+      setResetSent(false);
+    });
   }, [audience]);
 
   if (!audience) return null;
@@ -321,6 +340,21 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
+      if (mode === "forgot") {
+        const normalizedEmail = email.trim().toLowerCase();
+        if (!normalizedEmail) throw new Error("Enter your registered email address.");
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) throw new Error("Enter a valid email address.");
+
+        if (!isSupabaseConfigured()) {
+          throw new Error("Supabase authentication is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local and set NEXT_PUBLIC_DEMO_MODE=false to send real password reset emails.");
+        }
+
+        await sendPasswordResetEmail(normalizedEmail);
+        setResetSent(true);
+        toast.success("Password reset instructions sent to your email.");
+        return;
+      }
+
       if (mode === "create") {
         if (!name.trim()) throw new Error("Enter your full name.");
         if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
@@ -419,10 +453,113 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
     } finally { setBusy(false); }
   }
 
-  return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="sp-auth-dialog max-h-[90vh] overflow-y-auto rounded-4xl p-0 sm:max-w-lg"><div className="sp-auth-hero bg-linear-to-r from-[#e55a41] via-[#ff845e] to-[#5f8f2d] p-6 text-white"><DialogHeader><DialogTitle className="text-lg font-black">{audience === "customer" ? "Customer access" : "Vendor / Team access"}</DialogTitle><DialogDescription className="text-white/75">{audience === "customer" ? "Discover, request quotes and track scheduled orders." : "Vendors, operations and super admins use this secure entry."}</DialogDescription></DialogHeader></div><div className="p-6">
-    {audience === "customer" && <div className="grid grid-cols-2 rounded-2xl bg-stone-100 p-1"><button onClick={() => setMode("login")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "login" ? "bg-white shadow-sm" : "text-stone-500"}`}>Sign in</button><button onClick={() => setMode("create")} className={`rounded-xl py-2.5 text-sm font-black ${mode === "create" ? "bg-white shadow-sm" : "text-stone-500"}`}>Create account</button></div>}
-    {mode === "create" && audience === "customer" && !liveMode && <div className="mt-4 rounded-xl bg-sky-50 p-3 text-xs leading-5 text-sky-900">This test account is saved in this browser only. Configure Supabase for secure sign-in across devices.</div>}
-    <form onSubmit={submit} className="sp-auth-form mt-5 space-y-4">{mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} onFocus={revealField} autoComplete="name" className="entry-input" placeholder="Your name" /></InputField>}<InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} onFocus={revealField} autoComplete="email" inputMode="email" className="entry-input" /></InputField><InputField label="Password"><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onFocus={revealField} autoComplete={mode === "create" ? "new-password" : "current-password"} className="entry-input" /></InputField>{mode === "create" && audience === "customer" && <fieldset className="rounded-2xl border border-stone-200 p-4"><legend className="px-1 text-xs font-black uppercase tracking-wider text-stone-500">Account privacy</legend><p className="mb-3 text-xs leading-5 text-stone-500">Choose who can follow you. You can change this later in your profile.</p><div className="grid grid-cols-2 gap-2"><button type="button" aria-pressed={!privateAccount} onClick={() => setPrivateAccount(false)} className={`rounded-xl border p-3 text-left transition ${!privateAccount ? "border-[#e0194f] bg-[#fff0f4]" : "border-stone-200"}`}><span className="block text-sm font-black">Public</span><span className="mt-1 block text-xs text-stone-500">Customers can follow you directly.</span></button><button type="button" aria-pressed={privateAccount} onClick={() => setPrivateAccount(true)} className={`rounded-xl border p-3 text-left transition ${privateAccount ? "border-[#e0194f] bg-[#fff0f4]" : "border-stone-200"}`}><span className="block text-sm font-black">Private</span><span className="mt-1 block text-xs text-stone-500">Approve customer follow requests.</span></button></div></fieldset>}{mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}<Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<ArrowRight /></Button></form>
+  return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="sp-auth-dialog max-h-[90vh] overflow-y-auto rounded-4xl p-0 sm:max-w-lg"><div className="sp-auth-hero bg-linear-to-r from-[#e55a41] via-[#ff845e] to-[#5f8f2d] p-6 text-white"><DialogHeader><DialogTitle className="text-lg font-black">{audience === "customer" ? (mode === "forgot" ? "Reset password" : "Customer access") : "Vendor / Team access"}</DialogTitle><DialogDescription className="text-white/75">{audience === "customer" ? (mode === "forgot" ? "Enter your registered email address to receive password reset instructions." : "Discover, request quotes and track scheduled orders.") : "Vendors, operations and super admins use this secure entry."}</DialogDescription></DialogHeader></div><div className="p-6">
+    {audience === "customer" && mode !== "forgot" && <div className="grid grid-cols-2 rounded-2xl bg-stone-100 p-1"><button onClick={() => { setMode("login"); setError(""); }} className={`rounded-xl py-2.5 text-sm font-black ${mode === "login" ? "bg-white shadow-sm" : "text-stone-500"}`}>Sign in</button><button onClick={() => { setMode("create"); setError(""); }} className={`rounded-xl py-2.5 text-sm font-black ${mode === "create" ? "bg-white shadow-sm" : "text-stone-500"}`}>Create account</button></div>}
+    
+    {mode === "forgot" ? (
+      resetSent ? (
+        <div className="space-y-4 py-2">
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-900">
+            <div className="flex items-start gap-3">
+              <BadgeCheck className="mt-0.5 size-5 shrink-0 text-emerald-600" />
+              <div>
+                <h3 className="text-sm font-black text-emerald-950">Password reset link sent!</h3>
+                <p className="mt-1 text-xs leading-5 text-emerald-800">
+                  If <b>{email}</b> is registered with ShePlates, you will receive a password reset link shortly. Please check your inbox.
+                </p>
+                <p className="mt-2 text-[11px] text-emerald-700">
+                  Didn't see it? Check your spam or promotions folder.
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 pt-2">
+            <Button
+              type="button"
+              onClick={() => { setMode("login"); setError(""); setResetSent(false); }}
+              className="h-12 w-full rounded-xl bg-[#171312] text-sm font-black text-white hover:bg-black"
+            >
+              Back to sign in
+            </Button>
+            <button
+              type="button"
+              onClick={() => { setResetSent(false); setError(""); }}
+              className="py-2 text-center text-xs font-bold text-stone-500 hover:text-stone-900"
+            >
+              Resend link or use a different email
+            </button>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={submit} className="sp-auth-form mt-2 space-y-4">
+          <p className="text-xs leading-5 text-stone-600">
+            Enter the email address associated with your ShePlates customer account. We will send you a secure link to reset your password.
+          </p>
+          <InputField label="Registered Email">
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              onFocus={revealField}
+              autoComplete="email"
+              inputMode="email"
+              className="entry-input"
+              placeholder="customer@example.com"
+              required
+            />
+          </InputField>
+          {error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}
+          <Button
+            disabled={busy}
+            className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black"
+          >
+            {busy ? "Sending reset link…" : "Send password reset link"}
+            <ArrowRight />
+          </Button>
+          <button
+            type="button"
+            onClick={() => { setMode("login"); setError(""); }}
+            className="mt-2 w-full text-center text-sm font-bold text-stone-500 hover:text-stone-900"
+          >
+            ← Back to customer sign in
+          </button>
+        </form>
+      )
+    ) : (
+      <>
+        {mode === "create" && audience === "customer" && !liveMode && <div className="mt-4 rounded-xl bg-sky-50 p-3 text-xs leading-5 text-sky-900">This test account is saved in this browser only. Configure Supabase for secure sign-in across devices.</div>}
+        <form onSubmit={submit} className="sp-auth-form mt-5 space-y-4">
+          {mode === "create" && <InputField label="Full name"><input value={name} onChange={(event) => setName(event.target.value)} onFocus={revealField} autoComplete="name" className="entry-input" placeholder="Your name" /></InputField>}
+          <InputField label="Email"><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} onFocus={revealField} autoComplete="email" inputMode="email" className="entry-input" /></InputField>
+          <InputField
+            label="Password"
+            rightAction={
+              audience === "customer" && mode === "login" ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setMode("forgot");
+                    setError("");
+                    setResetSent(false);
+                  }}
+                  className="text-xs font-bold text-[#238247] hover:underline"
+                >
+                  Forgot password?
+                </button>
+              ) : undefined
+            }
+          >
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} onFocus={revealField} autoComplete={mode === "create" ? "new-password" : "current-password"} className="entry-input" />
+          </InputField>
+          {/* Supported verification flow: autoComplete="one-time-code" */}
+          {mode === "create" && audience === "customer" && <fieldset className="rounded-2xl border border-stone-200 p-4"><legend className="px-1 text-xs font-black uppercase tracking-wider text-stone-500">Account privacy</legend><p className="mb-3 text-xs leading-5 text-stone-500">Choose who can follow you. You can change this later in your profile.</p><div className="grid grid-cols-2 gap-2"><button type="button" aria-pressed={!privateAccount} onClick={() => setPrivateAccount(false)} className={`rounded-xl border p-3 text-left transition ${!privateAccount ? "border-[#e0194f] bg-[#fff0f4]" : "border-stone-200"}`}><span className="block text-sm font-black">Public</span><span className="mt-1 block text-xs text-stone-500">Customers can follow you directly.</span></button><button type="button" aria-pressed={privateAccount} onClick={() => setPrivateAccount(true)} className={`rounded-xl border p-3 text-left transition ${privateAccount ? "border-[#e0194f] bg-[#fff0f4]" : "border-stone-200"}`}><span className="block text-sm font-black">Private</span><span className="mt-1 block text-xs text-stone-500">Approve customer follow requests.</span></button></div></fieldset>}
+          {mode === "create" && audience === "team" && <div className="rounded-xl bg-amber-50 p-3 text-sm leading-6 text-amber-900"><b>Vendor registration only.</b> Operations and super-admin access is created by an existing super admin.</div>}
+          {error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}
+          <Button disabled={busy} className="h-12 w-full rounded-xl bg-[#171312] text-base font-black hover:bg-black">{busy ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}<ArrowRight /></Button>
+        </form>
+      </>
+    )}
     {audience === "team" && <button onClick={() => { setMode(mode === "login" ? "create" : "login"); setError(""); }} className="mt-4 w-full text-center text-sm text-stone-500">{mode === "login" ? <>Not a vendor? <span className="font-black text-[#ff4d18]">Be part of our vendor team</span></> : <>Already registered? <span className="font-black text-[#ff4d18]">Sign in</span></>}</button>}
   </div></DialogContent></Dialog>;
 }
@@ -436,6 +573,6 @@ function AgentPreview({ open, close, login }: { open: boolean; close: () => void
   </section></div>;
 }
 
-function InputField({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block"><span className="mb-2 block text-xs font-black uppercase tracking-wider text-stone-500">{label}</span>{children}</label>; }
+function InputField({ label, rightAction, children }: { label: string; rightAction?: React.ReactNode; children: React.ReactNode }) { return <label className="block"><div className="mb-2 flex items-center justify-between"><span className="block text-xs font-black uppercase tracking-wider text-stone-500">{label}</span>{rightAction}</div>{children}</label>; }
 
 function Brand({ dark = false }: { dark?: boolean }) { return <div className="flex min-w-0 items-center gap-2.5 sm:gap-3"><div className={`grid size-10 shrink-0 place-items-center rounded-[14px] sm:size-12 sm:rounded-2xl ${dark ? "surface-card-muted" : "border border-white/10 bg-white/10"}`}><img src="/sheplates-logo.png" alt="ShePlates" className="size-8 rounded-full object-contain sm:size-10" /></div><div className="min-w-0"><div className={`truncate text-lg font-black tracking-[-.03em] sm:text-xl ${dark ? "text-[#171312]" : "text-white"}`}>ShePlates</div><div className={`hidden text-[9px] font-black uppercase tracking-[.18em] min-[390px]:block sm:text-[10px] ${dark ? "text-[#5f8f2d]" : "text-white/65"}`}>Agentic local commerce</div></div></div>; }
