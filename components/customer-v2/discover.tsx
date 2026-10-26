@@ -97,11 +97,43 @@ export function MapsTab({ state, profile, social, shorts, people, peopleRadius, 
   const [tab, setTab] = useState<MapTab>("Nearby");
   const [view, setView] = useState<"map" | "list">("map");
   const [vendorRadius, setVendorRadius] = useState(10);
+  const [radiusLoaded, setRadiusLoaded] = useState(false);
   const [selectedId, setSelectedId] = useState<string>("");
   const [query, setQuery] = useState("");
   const [peopleFilter, setPeopleFilter] = useState<PeopleFilter>("Everyone");
   const mobile = useIsMobile();
   const onPeople = tab === "People";
+
+  // Restore the saved vendor radius when the Maps tab mounts.
+  useEffect(() => {
+    try {
+      const savedRadius = localStorage.getItem("sheplates-map-vendor-radius-km");
+
+      if (savedRadius !== null) {
+        const parsedRadius = Number(savedRadius);
+
+        if (Number.isFinite(parsedRadius) && parsedRadius > 0) {
+          queueMicrotask(() => setVendorRadius(parsedRadius));
+        }
+      }
+    } catch (error) {
+      console.error("Could not restore map radius:", error);
+    } finally {
+      setRadiusLoaded(true);
+    }
+  }, []);
+
+  // Save only after restoring the saved value, so the default doesn't overwrite it.
+  useEffect(() => {
+    if (!radiusLoaded) return;
+
+    try {
+      localStorage.setItem("sheplates-map-vendor-radius-km", String(vendorRadius));
+    } catch (error) {
+      console.error("Could not save map radius:", error);
+    }
+  }, [vendorRadius, radiusLoaded]);
+
   const radius = onPeople ? peopleRadius : vendorRadius;
   const setRadius = onPeople ? onPeopleRadius : setVendorRadius;
 
@@ -122,13 +154,13 @@ export function MapsTab({ state, profile, social, shorts, people, peopleRadius, 
     const withDistance = vendors.map((vendor) => ({ vendor, distance: vendorDistanceKm(profile, vendor) ?? 0 }));
     const inRange = withDistance.filter((r) => tab === "Following" || r.distance <= vendorRadius);
     return tab === "Trending" ? inRange.sort((a, b) => activity(b.vendor.id) - activity(a.vendor.id)) : inRange.sort((a, b) => a.distance - b.distance);
-  }, [state.vendors, state.foodDrops, state.orders, social.followed, tab, query, vendorRadius, onPeople, profile.latitude, profile.longitude, shortsByVendor]);
+  }, [state.vendors, state.foodDrops, state.orders, social.followed, tab, query, vendorRadius, onPeople, profile, shortsByVendor]);
 
   // People who chose to be on the map, inside the radius (the database already limits what it returns)
   const peopleQuery = usePeopleQuery(() => people.nearby(peopleRadius, query), [peopleRadius, query, people.mode, people.hasPin, locationConfirmed], onPeople && locationConfirmed && people.hasPin);
   const nearbyPeople = useMemo(() => peopleQuery.rows
-    .map((p) => ({ ...p, following: people.followingIds.has(p.id) }))
-    .filter((p) => peopleFilter === "Everyone" || (peopleFilter === "Following" ? p.following : Boolean(p.hasStatus))), [peopleQuery.rows, people.followingIds, peopleFilter]);
+    .map((p) => ({ ...p, following: people.followingIds.has(p.id), requested: people.requestedIds.has(p.id) }))
+    .filter((p) => peopleFilter === "Everyone" || (peopleFilter === "Following" ? p.following : Boolean(p.hasStatus))), [peopleQuery.rows, people.followingIds, people.requestedIds, peopleFilter]);
   const selectedPerson = nearbyPeople.find((p) => p.id === selectedId) || nearbyPeople[0];
 
   const selected = rows.find((r) => r.vendor.id === selectedId) || rows[0];
@@ -174,14 +206,14 @@ function dropTag(drop: FoodDrop) {
 }
 
 function DropCard({ drop, state, profile, onClaim }: { drop: FoodDrop; state: V3State; profile: Coords; onClaim: (drop: FoodDrop, quantity: number) => Promise<void> }) {
-  useTicker();
+  const now = useTicker();
   const [busy, setBusy] = useState(false);
   const product = state.products.find((p) => p.id === drop.productId); const vendor = state.vendors.find((v) => v.id === drop.vendorId);
   const distance = vendor ? vendorDistanceKm(profile, vendor) : null; const tag = dropTag(drop);
-  const left = drop.remainingQuantity; const urgent = new Date(drop.endsAt).getTime() - Date.now() < 3_600_000;
+  const left = drop.remainingQuantity; const urgent = new Date(drop.endsAt).getTime() - now < 3_600_000;
   return <article className="overflow-hidden rounded-[26px] border border-stone-200/70 bg-white shadow-sm">
     <PhotoTile imageUrl={product?.imageUrl} category={product?.category} className="h-48 sm:h-52" emojiSize={64}>
-      <span className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-black text-white shadow-lg ${urgent ? "bg-[#e0194f]" : "bg-[#171914]/85"}`}><Timer className="size-3.5" /><span><span className="block text-[9px] font-bold uppercase leading-none opacity-80">Closes in</span>{closesIn(drop.endsAt)}</span></span>
+      <span className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-black text-white shadow-lg ${urgent ? "bg-[#e0194f]" : "bg-[#171914]/85"}`}><Timer className="size-3.5" /><span><span className="block text-[9px] font-bold uppercase leading-none opacity-80">Closes in</span>{closesIn(drop.endsAt, now)}</span></span>
       {tag && <span className="absolute right-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-black text-[#c4123f] shadow">{tag}</span>}
       <span className="absolute bottom-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-black text-[#e0194f] shadow">{discountPercent(drop)}% off</span>
     </PhotoTile>
@@ -198,7 +230,7 @@ function DropCard({ drop, state, profile, onClaim }: { drop: FoodDrop; state: V3
 
 export function FoodDropsTab({ state, profile, social, onClaim, onRefresh }: { state: V3State; profile: Coords; social: SocialApi; onClaim: (drop: FoodDrop, quantity: number) => Promise<void>; onRefresh: () => void }) {
   const [scope, setScope] = useState<DropScope>("Nearby");
-  useEffect(() => { onRefresh(); const id = window.setInterval(onRefresh, 30_000); return () => window.clearInterval(id); }, []);
+  useEffect(() => { onRefresh(); const id = window.setInterval(onRefresh, 30_000); return () => window.clearInterval(id); }, [onRefresh]);
   const drops = useMemo(() => {
     const live = state.foodDrops.filter((d) => dropDisplayStatus(d) === "live");
     const known = (d: FoodDrop) => state.vendors.find((v) => v.id === d.vendorId);
@@ -207,7 +239,7 @@ export function FoodDropsTab({ state, profile, social, onClaim, onRefresh }: { s
     if (scope === "Following") return live.filter((d) => social.followed.includes(d.vendorId));
     if (scope === "Trending") return [...live].sort((a, b) => claimedPercent(b) - claimedPercent(a) || a.remainingQuantity - b.remainingQuantity);
     return [...live].sort((a, b) => new Date(a.endsAt).getTime() - new Date(b.endsAt).getTime());
-  }, [state.foodDrops, state.vendors, scope, social.followed, profile.latitude, profile.longitude]);
+  }, [state.foodDrops, state.vendors, scope, social.followed, profile]);
   return <div className="space-y-4">
     <div className="flex items-center gap-2"><span className="grid size-9 place-items-center rounded-full bg-[#fff0f4] text-[#e0194f]"><Zap className="size-5" /></span><div><h1 className="text-xl font-black tracking-[-.02em]">Food Drops</h1><p className="text-xs font-bold text-stone-500">Surplus and limited batches from local vendors — while they last.</p></div></div>
     <SegTabs tabs={DROP_SCOPES} value={scope} onChange={setScope} />
@@ -218,12 +250,34 @@ export function FoodDropsTab({ state, profile, social, onClaim, onRefresh }: { s
 
 /* ---------- Schedules tab ---------- */
 
-export function SchedulesTab({ initial, orders, subscriptions }: { initial: "Orders" | "Subscriptions"; orders: React.ReactNode; subscriptions: React.ReactNode }) {
-  const [tab, setTab] = useState<"Orders" | "Subscriptions">(initial);
-  useEffect(() => setTab(initial), [initial]);
-  return <div className="space-y-5"><div><h1 className="text-xl font-black tracking-[-.02em]">My Schedules</h1></div>
-    <SegTabs tabs={["Orders", "Subscriptions"] as const} value={tab} onChange={setTab} className="[&_button]:flex-1 [&_button]:rounded-xl" />
-    {tab === "Orders" ? orders : subscriptions}
-  </div>;
-}
 
+export function SchedulesTab({
+  initial,
+  orders,
+  subscriptions,
+}: {
+  initial: "Orders" | "Subscriptions";
+  orders: React.ReactNode;
+  subscriptions: React.ReactNode;
+}) {
+  const [tab, setTab] = useState<"Orders" | "Subscriptions">(initial);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-xl font-black tracking-[-.02em]">
+          My Schedules
+        </h1>
+      </div>
+
+      <SegTabs
+        tabs={["Orders", "Subscriptions"] as const}
+        value={tab}
+        onChange={setTab}
+        className="[&_button]:flex-1 [&_button]:rounded-xl"
+      />
+
+      {tab === "Orders" ? orders : subscriptions}
+    </div>
+  );
+}

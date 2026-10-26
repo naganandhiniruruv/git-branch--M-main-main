@@ -45,7 +45,12 @@ export function useCustomerCampaigns(local: CampaignRecord[], hasOrdered: boolea
   const [remote, setRemote] = useState<LiveCampaign[] | null>(null);
   const live = isLiveSupabaseMode();
   const refresh = useCallback(async () => { if (live) setRemote(await loadLiveCampaigns()); }, [live]);
-  useEffect(() => { if (!live) return; void refresh(); const t = window.setInterval(() => void refresh(), 60_000); return () => window.clearInterval(t); }, [live, refresh]);
+  useEffect(() => {
+    if (!live) return;
+    const initial = window.setTimeout(() => void refresh(), 0);
+    const interval = window.setInterval(() => void refresh(), 60_000);
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); };
+  }, [live, refresh]);
   const [tick, setTick] = useState(0);
   useEffect(() => { if (live) return; const t = window.setInterval(() => setTick((n) => n + 1), 30_000); return () => window.clearInterval(t); }, [live]);
   return useMemo(() => (live ? remote || [] : liveForCustomer(local, hasOrdered).map(toLiveCampaign)), [live, remote, local, hasOrdered, tick]); // eslint-disable-line react-hooks/exhaustive-deps

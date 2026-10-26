@@ -139,7 +139,7 @@ function safeDemoContext(role: Role, input: Record<string, unknown>) {
 
 type Authorised =
   | { demo: true; role: Role; context: Record<string, unknown> }
-  | { demo: false; role: Role; supabase: SupabaseClient<any, "public", "public", any, any>; profile: { id: string; role: string; vendor_id: string | null; full_name: string | null } };
+  | { demo: false; role: Role; supabase: SupabaseClient; profile: { id: string; role: string; vendor_id: string | null; full_name: string | null } };
 
 /** Step 1, quick: verify the token and read the role. The role decides which tools the assistant gets. */
 async function authoriseRole(request: Request, body: AgentRequest): Promise<Authorised> {
@@ -338,12 +338,13 @@ function productPriceOf(row: Record<string, unknown>) {
   const value = Number(row.customer_price ?? row.vendorPrice ?? row.vendor_base_price ?? 0);
   return Number.isFinite(value) ? value : 0;
 }
-function productNameOf(row: Record<string, unknown>) {
-  return String(row.item_name || row.name || "Product");
-}
 function validateCommerceResult(raw: CommerceResult, context: Record<string, unknown>, role: Role): CommerceResult {
   const products = Array.isArray(context.availableProducts) ? context.availableProducts.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
-  const allowed = new Map(products.map((product) => [productIdOf(product), product]).filter(([id]) => Boolean(id)));
+  const allowed = new Map<string, Record<string, unknown>>();
+  for (const product of products) {
+    const id = productIdOf(product);
+    if (id) allowed.set(id, product);
+  }
   const uniqueAllowed = (ids: string[]) => [...new Set(ids || [])].filter((id) => allowed.has(id)).slice(0, 8);
   const budget = Number(raw.budget);
   const budgetCap = Number.isFinite(budget) && budget > 0 ? budget : undefined;

@@ -5,7 +5,8 @@
 // whatever the customer is allowed to see.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronUp, Heart, MapPin, Play, Volume2, VolumeX, X } from "lucide-react";
+import Image from "next/image";
+import { ChevronDown, ChevronUp, Heart, MapPin, Play, ShoppingBag, Volume2, VolumeX, X } from "lucide-react";
 import type { FoodShort } from "@/lib/food-shorts";
 import { VIEW_RADIUS_OPTIONS_KM, formatDistanceKm, formatDuration } from "@/lib/food-shorts-rules";
 import { Avatar, EmptyState, PhotoTile, categoryEmoji } from "./kit";
@@ -59,7 +60,7 @@ export function ShortsViewer({ shorts, startIndex, onClose, liked, onLike, onVie
   const [muted, setMuted] = useState(true);
   const [progress, setProgress] = useState(0);
   const count = shorts.length;
-  const baseLiked = useRef(new Set(liked)); // the snapshot's like counts already include these
+  const [baseLiked] = useState(() => new Set(liked)); // the snapshot's like counts already include these
 
   const go = useCallback((index: number) => {
     const el = slides.current[Math.max(0, Math.min(count - 1, index))];
@@ -81,14 +82,16 @@ export function ShortsViewer({ shorts, startIndex, onClose, liked, onLike, onVie
   useEffect(() => {
     const root = scroller.current; if (!root) return;
     const io = new IntersectionObserver((entries) => {
-      for (const entry of entries) if (entry.isIntersecting && entry.intersectionRatio >= 0.6) setActive(Number((entry.target as HTMLElement).dataset.index));
+      for (const entry of entries) if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
+        setProgress(0);
+        setActive(Number((entry.target as HTMLElement).dataset.index));
+      }
     }, { root, threshold: [0.6] });
     slides.current.forEach((el) => el && io.observe(el));
     return () => io.disconnect();
   }, [count]);
 
   useEffect(() => {
-    setProgress(0);
     videos.current.forEach((video, i) => { if (!video) return; if (i === active) { video.currentTime = 0; void video.play().catch(() => undefined); } else video.pause(); });
     const current = shorts[active]; if (current) onView(current.id);
   }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -99,9 +102,17 @@ export function ShortsViewer({ shorts, startIndex, onClose, liked, onLike, onVie
     <div ref={scroller} className="h-full snap-y snap-mandatory overflow-y-scroll overscroll-contain hide-scrollbar">
       {shorts.map((s, i) => <section key={s.id} ref={(el) => { slides.current[i] = el; }} data-index={i} aria-label={`${s.title}, ${s.vendorName}`} className="relative flex h-[100dvh] snap-start items-center justify-center">
         <div className="relative h-full w-full max-w-[460px] overflow-hidden bg-stone-900">
+          {(() => {
+            let shopHref: string | undefined;
+            try {
+              const url = new URL(s.shopLink || "");
+              if (url.protocol === "https:" || url.protocol === "http:") shopHref = url.href;
+            } catch { /* Hide malformed links from older or externally written records. */ }
+            return shopHref && <a href={shopHref} target="_blank" rel="noopener noreferrer" className="absolute right-4 bottom-32 z-10 inline-flex items-center gap-2 rounded-full bg-white px-4 py-2.5 text-sm font-black text-stone-900 shadow-lg transition hover:bg-stone-100"><ShoppingBag className="size-4" />Shop now</a>;
+          })()}
           {s.videoUrl
             ? <video ref={(el) => { videos.current[i] = el; }} src={s.videoUrl} poster={s.thumbUrl} muted={muted} loop playsInline preload={Math.abs(i - active) <= 1 ? "auto" : "metadata"} onTimeUpdate={(e) => { if (i === active) setProgress(e.currentTarget.duration ? e.currentTarget.currentTime / e.currentTarget.duration : 0); }} className="h-full w-full object-cover" />
-            : <div className="grid h-full w-full place-items-center bg-gradient-to-br from-[#3a1220] via-[#5a1a31] to-[#1a0a10]">{s.thumbUrl ? <img src={s.thumbUrl} alt="" className="absolute inset-0 h-full w-full object-cover opacity-80" /> : <span className="text-[120px]" aria-hidden>{categoryEmoji(s.vendorCategory)}</span>}<span className="absolute left-1/2 top-24 -translate-x-1/2 rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-stone-800">Sample clip, no video</span></div>}
+            : <div className="grid h-full w-full place-items-center bg-gradient-to-br from-[#3a1220] via-[#5a1a31] to-[#1a0a10]">{s.thumbUrl ? <Image src={s.thumbUrl} alt="" fill unoptimized sizes="460px" className="object-cover opacity-80" /> : <span className="text-[120px]" aria-hidden>{categoryEmoji(s.vendorCategory)}</span>}<span className="absolute left-1/2 top-24 -translate-x-1/2 rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-stone-800">Sample clip, no video</span></div>}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/80 to-transparent" />
           <div className="absolute inset-x-4 bottom-6 flex items-end justify-between gap-3 text-white">
             <div className="min-w-0 flex-1">
@@ -115,7 +126,7 @@ export function ShortsViewer({ shorts, startIndex, onClose, liked, onLike, onVie
             </div>
             <div className="flex shrink-0 flex-col items-center gap-3">
               <button type="button" aria-label={liked.includes(s.id) ? "Unlike" : "Like"} onClick={() => onLike(s.id)} className="grid size-12 place-items-center rounded-full bg-white/15 backdrop-blur transition active:scale-90"><Heart className={`size-6 ${liked.includes(s.id) ? "fill-[#ff4d7a] text-[#ff4d7a]" : "text-white"}`} /></button>
-              <span className="-mt-2 text-xs font-black" data-testid="short-likes">{s.likeCount + (liked.includes(s.id) ? 1 : 0) - (baseLiked.current.has(s.id) ? 1 : 0)}</span>
+              <span className="-mt-2 text-xs font-black" data-testid="short-likes">{s.likeCount + (liked.includes(s.id) ? 1 : 0) - (baseLiked.has(s.id) ? 1 : 0)}</span>
             </div>
           </div>
           {i === active && s.videoUrl && <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20"><div className="h-full bg-[#ff4d7a]" style={{ width: `${progress * 100}%` }} /></div>}

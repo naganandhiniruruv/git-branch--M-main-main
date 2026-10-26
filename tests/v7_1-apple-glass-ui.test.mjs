@@ -14,8 +14,13 @@ test('v7.1 is the adaptive glass visual release', () => {
 test('She Agent uses a modern orbital visual mark without changing agent flow', () => {
   assert.match(app, /<Activity className=\"size-5\" \/>/);
   assert.match(app, /sp-agent-orb/);
+  assert.doesNotMatch(app, /Ask naturally · grounded in your marketplace/);
+  assert.doesNotMatch(app, /Ask your commerce copilot/);
   assert.match(app, /<SheAgent open=\{agentOpen\}/);
   assert.match(css, /sp-agent-launcher/);
+  assert.match(css, /sp-agent-logo-bounce/);
+  assert.match(css, /\.sp-agent-launcher:hover\s*\{[^}]*linear-gradient/s);
+  assert.match(css, /\.sp-staff-agent-launcher:hover\s*\{[^}]*rgba\(35,122,69/s);
   assert.match(css, /sp-agent-panel/);
 });
 

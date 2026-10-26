@@ -14,7 +14,7 @@ import { localPersonId, type PeopleApi, type PeopleUser } from "@/lib/people";
 export type Status = {
   id: string; authorId: string; handle: string; kind: "photo" | "video"; mediaUrl?: string; thumbUrl?: string; caption: string;
   vendorId?: string | null; vendorName?: string; durationS?: number; createdAt: string; expiresAt: string; likeCount: number; liked: boolean;
-  source: "following" | "nearby"; distanceKm?: number; sample?: boolean; mediaKey?: string; emoji?: string;
+  source: "following" | "nearby"; distanceKm?: number; sample?: boolean; mediaKey?: string; emoji?: string; viewed?: boolean;
 };
 export type MyStatus = Status & { viewCount: number };
 export type StatusViewer = { handle: string; viewedAt: string; liked: boolean };
@@ -24,6 +24,7 @@ const KEY = "sheplates-statuses-v1";
 // Ids watched on this device. The database is the record, but a page that is closed or reloaded the moment a
 // status ends could drop the request, so this keeps a watched status out of the rail until the database agrees.
 const SEEN_KEY = "sheplates-status-seen-v1";
+const STATUS_INITIAL_TIME = Date.now();
 function readSeen(): string[] { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "[]"); } catch { return []; } }
 function rememberSeen(id: string) { try { localStorage.setItem(SEEN_KEY, JSON.stringify([...new Set([...readSeen(), id])].slice(-300))); } catch { /* ignore */ } }
 type LocalStatus = Omit<Status, "liked" | "likeCount" | "source" | "handle"> & { handle: string };
@@ -55,9 +56,9 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
   const [remoteMine, setRemoteMine] = useState<MyStatus[]>([]);
   const [store, setStore] = useState<Store>(EMPTY);
   const [videoUrls, setVideoUrls] = useState<Record<string, string>>({});
-  const [clock, setClock] = useState(() => Date.now());
-  const baseNow = useRef(Date.now());
-  const storeRef = useRef(store); storeRef.current = store;
+  const [clock, setClock] = useState(STATUS_INITIAL_TIME);
+  const storeRef = useRef(store);
+  useEffect(() => { storeRef.current = store; }, [store]);
   const { email, userId, role } = user;
   const myLocalId = localPersonId(email || "");
   const pin: Pin | null = people.viewerPin;
@@ -84,7 +85,7 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
   useEffect(() => {
     if (!email || role !== "customer") return;
     let cancelled = false;
-    setStore(readStore());
+    queueMicrotask(() => { if (!cancelled) setStore(readStore()); });
     (async () => {
       const sb = getSupabaseBrowserClient();
       if (!sb || !isLiveSupabaseMode() || !userId) { if (!cancelled) setMode("local"); return; }
@@ -98,7 +99,11 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
     return () => { cancelled = true; };
   }, [email, userId, role]);
 
-  useEffect(() => { if (mode === "remote") void loadRemote(); }, [mode, loadRemote]);
+  useEffect(() => {
+    if (mode !== "remote") return;
+    const initial = window.setTimeout(() => void loadRemote(), 0);
+    return () => window.clearTimeout(initial);
+  }, [mode, loadRemote]);
   useEffect(() => { if (mode !== "remote") return; const t = window.setInterval(() => void loadRemote(), 60_000); return () => window.clearInterval(t); }, [mode, loadRemote]);
 
   // local back-end: resolve stored videos
@@ -113,23 +118,28 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
 
   // ---------------- what the customer can watch ----------------
   const feedItems = useMemo<Status[]>(() => {
-    if (mode === "remote") { const seen = new Set(readSeen()); return remoteFeed.filter((s) => isStatusActive(s, clock) && !seen.has(s.id)); }
+    if (mode === "remote") {
+      const seen = new Set(readSeen());
+      return remoteFeed
+        .filter((s) => isStatusActive(s, clock))
+        .map((s) => ({ ...s, viewed: seen.has(s.id) }));
+    }
     if (mode !== "local") return [];
     const viewed = new Set(store.views[email.toLowerCase()] || []);
     const liked = new Set(store.likes[email.toLowerCase()] || []);
     const people_ = new Map(people.localPeople.map((p) => [p.id, p]));
     const sampleRows: Status[] = SAMPLE_STATUSES.map((s, i) => {
       const person = people_.get(s.person); if (!person) return null;
-      const createdAt = new Date(baseNow.current - s.ageHours * 3_600_000).toISOString();
+      const createdAt = new Date(STATUS_INITIAL_TIME - s.ageHours * 3_600_000).toISOString();
       return { id: `sample-status-${s.person}-${i}`, authorId: s.person, handle: person.handle, kind: "photo" as const, caption: s.caption, thumbUrl: undefined, createdAt, expiresAt: statusExpiry(new Date(createdAt).getTime()), likeCount: 3 + i, liked: false, source: "nearby" as const, distanceKm: person.distanceKm, sample: true, emoji: s.emoji };
     }).filter((x): x is NonNullable<typeof x> => x !== null);
     const real: Status[] = store.statuses.filter((s) => s.authorId !== myLocalId).map((s) => ({ ...s, mediaUrl: s.kind === "video" ? (s.mediaKey ? videoUrls[s.mediaKey] : undefined) : s.mediaUrl, likeCount: Object.values(store.likes).filter((ids) => ids.includes(s.id)).length, liked: false, source: "nearby" as const }));
     return [...sampleRows, ...real].flatMap((s) => {
       const person = people_.get(s.authorId);
       const following = people.followingIds.has(s.authorId);
-      const visible = statusVisibleTo({ authorId: s.authorId, viewerId: myLocalId, expiresAt: s.expiresAt, viewerFollowsAuthor: following, authorDiscoverable: Boolean(person?.discoverable), authorPin: person?.pin ?? null, viewerPin: pin, radiusKm, alreadyViewed: viewed.has(s.id) }, clock);
+      const visible = statusVisibleTo({ authorId: s.authorId, viewerId: myLocalId, expiresAt: s.expiresAt, viewerFollowsAuthor: following, authorDiscoverable: Boolean(person?.discoverable), authorPrivateAccount: Boolean(person?.privateAccount), authorPin: person?.pin ?? null, viewerPin: pin, radiusKm, alreadyViewed: false }, clock);
       if (!visible) return [];
-      return [{ ...s, handle: person?.handle || s.handle, source: following ? "following" as const : "nearby" as const, distanceKm: person?.distanceKm, liked: liked.has(s.id), vendorName: s.vendorId ? vendors.find((v) => v.id === s.vendorId)?.businessName : undefined }];
+      return [{ ...s, handle: person?.handle || s.handle, source: following ? "following" as const : "nearby" as const, distanceKm: person?.distanceKm, liked: liked.has(s.id), viewed: viewed.has(s.id), vendorName: s.vendorId ? vendors.find((v) => v.id === s.vendorId)?.businessName : undefined }];
     });
   }, [mode, remoteFeed, store, videoUrls, clock, people.localPeople, people.followingIds, pin, radiusKm, myLocalId, email, vendors]);
 
@@ -185,8 +195,8 @@ export function useStatuses(user: PeopleUser & { handle: string }, people: Peopl
   const markViewed = useCallback((id: string) => {
     if (mode === "remote") {
       rememberSeen(id);
-      setRemoteFeed((list) => list.filter((s) => s.id !== id));
-      void getSupabaseBrowserClient()?.rpc("mark_status_viewed", { p_status: id }).then((res) => { if (res.error) console.warn("Could not record the view", res.error.message); });
+      setRemoteFeed((list) => list.map((s) => s.id === id ? { ...s, viewed: true } : s));
+      void getSupabaseBrowserClient()?.rpc("mark_status_viewed", { p_status: id }).then((res) => { if (res?.error) console.warn("Could not record the view", res.error.message); });
       return;
     }
     const key = email.toLowerCase(); const current = storeRef.current;

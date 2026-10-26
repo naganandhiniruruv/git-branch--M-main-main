@@ -27,7 +27,7 @@ const FAR = { lat: 10.9983, lng: 76.9331 };                // about 6.8 km from 
 try {
   const vendorA = await mkUser("vendor", "vendorA"), vendorB = await mkUser("vendor", "vendorB"), customer = await mkUser("customer", "cust");
   const vidA = await mkVendor(vendorA.id, "Test Bakery Near", NEAR.lat, NEAR.lng, 10);
-  const vidB = await mkVendor(vendorB.id, "Test Farm Far", FAR.lat, FAR.lng, 10);
+  await mkVendor(vendorB.id, "Test Farm Far", FAR.lat, FAR.lng, 10);
 
   // ---- storage rules ----
   const bytes = new Blob([new Uint8Array(2048)], { type: "video/webm" });

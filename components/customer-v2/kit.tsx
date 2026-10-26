@@ -3,6 +3,7 @@
 // free of value imports from sheplates-v3.tsx (types only) so the screens in
 // this folder never form an import cycle with the main shell.
 import type * as React from "react";
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { categories } from "@/lib/sheplates-data";
 import type { Product, Vendor, V3State } from "@/components/sheplates-v3";
@@ -58,7 +59,7 @@ export function Avatar({ name, size = 40, ring = false }: { name: string; size?:
  * so cards keep the photo-forward look of the design before vendors upload images. */
 export function PhotoTile({ imageUrl, category, className = "", emojiSize = 44, children }: { imageUrl?: string | null; category?: string; className?: string; emojiSize?: number; children?: React.ReactNode }) {
   return <div className={`relative overflow-hidden ${className}`} style={imageUrl ? undefined : { background: `linear-gradient(135deg, ${categoryTint(category || "")}, #fff5f8)` }}>
-    {imageUrl ? <img src={imageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" /> : <span className="absolute inset-0 grid place-items-center" style={{ fontSize: emojiSize }} aria-hidden>{categoryEmoji(category || "")}</span>}
+    {imageUrl ? <Image src={imageUrl} alt="" fill unoptimized sizes="(max-width: 768px) 100vw, 50vw" className="object-cover" /> : <span className="absolute inset-0 grid place-items-center" style={{ fontSize: emojiSize }} aria-hidden>{categoryEmoji(category || "")}</span>}
     {children}
   </div>;
 }
@@ -80,12 +81,13 @@ export function useIsMobile() {
 
 /** Re-renders every second so countdowns stay live; the deadline itself always comes from the server row. */
 export function useTicker(intervalMs = 1000) {
-  const [, setTick] = useState(0);
-  useEffect(() => { const id = window.setInterval(() => setTick((n) => n + 1), intervalMs); return () => window.clearInterval(id); }, [intervalMs]);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const id = window.setInterval(() => setNow(Date.now()), intervalMs); return () => window.clearInterval(id); }, [intervalMs]);
+  return now;
 }
 
-export function closesIn(endsAt: string) {
-  const ms = new Date(endsAt).getTime() - Date.now();
+export function closesIn(endsAt: string, now = Date.now()) {
+  const ms = new Date(endsAt).getTime() - now;
   if (ms <= 0) return "Ended";
   const m = Math.floor(ms / 60000), h = Math.floor(m / 60), s = Math.floor((ms % 60000) / 1000);
   if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;

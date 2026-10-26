@@ -12,6 +12,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient, isLiveSupabaseMode } from "@/lib/supabase";
 
+const SOCIAL_INITIAL_TIME = Date.now();
+
 export type PostKind = "photo" | "trial";
 export type SocialPost = {
   id: string; authorId: string; authorName: string; authorHandle: string; kind: PostKind;
@@ -32,6 +34,27 @@ const DAY = 86_400_000;
 
 type LocalPosts = { posts: SocialPost[]; comments: Record<string, SocialComment[]>; likeBonus: Record<string, number> };
 type LocalUser = { liked: string[]; saved: string[]; followed: string[]; reported: string[]; profile: SocialProfile };
+export type VendorFollower = { id: string; handle: string; bio: string };
+const LOCAL_VENDOR_FOLLOWERS_KEY = "sheplates-social-vendor-followers-v1";
+
+function readLocalVendorFollowers(): Record<string, VendorFollower[]> {
+  try { return JSON.parse(localStorage.getItem(LOCAL_VENDOR_FOLLOWERS_KEY) || "{}"); } catch { return {}; }
+}
+function writeLocalVendorFollowers(value: Record<string, VendorFollower[]>) {
+  try { localStorage.setItem(LOCAL_VENDOR_FOLLOWERS_KEY, JSON.stringify(value)); } catch { /* storage full: keep the in-memory follow state */ }
+}
+
+export async function loadVendorFollowers(vendorId: string): Promise<VendorFollower[]> {
+  const supabase = getSupabaseBrowserClient();
+  if (supabase && isLiveSupabaseMode()) {
+    const result = await supabase.rpc("list_vendor_followers", { p_vendor: vendorId });
+    if (result.error) throw new Error(result.error.message);
+    return ((result.data || []) as Array<{ user_id: string; handle: string; bio: string }>).map((row) => ({
+      id: row.user_id, handle: row.handle, bio: row.bio || "",
+    }));
+  }
+  return readLocalVendorFollowers()[vendorId] || [];
+}
 
 function readJson<T>(key: string, fallback: T): T {
   try { const raw = localStorage.getItem(key); return raw ? { ...fallback, ...JSON.parse(raw) } : fallback; } catch { return fallback; }
@@ -97,19 +120,37 @@ const mapRemote = (row: RemotePostRow): SocialPost => ({
 export type CreatePostInput = { kind: PostKind; caption: string; imageDataUrl?: string; vendorId?: string | null; productId?: string | null };
 
 export function useSocial(user: SocialUser, vendors: SeedVendor[], products: SeedProduct[]) {
+  const [now, setNow] = useState(SOCIAL_INITIAL_TIME);
   const [mode, setMode] = useState<"loading" | "remote" | "local">("loading");
   const [remotePosts, setRemotePosts] = useState<SocialPost[]>([]);
   const [localPosts, setLocalPosts] = useState<LocalPosts>({ posts: [], comments: {}, likeBonus: {} });
   const [me, setMe] = useState<LocalUser>({ liked: [], saved: [], followed: [], reported: [], profile: { handle: defaultHandle(user.name, user.email), bio: "" } });
-  const meRef = useRef(me); meRef.current = me;
+  const meRef = useRef(me);
+  useEffect(() => { meRef.current = me; }, [me]);
   const userId = user.userId;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!user.email) return; // signed out — nothing to load
     let cancelled = false;
     const stored = readJson<LocalUser>(userKey(user.email), { liked: [], saved: [], followed: [], reported: [], profile: { handle: defaultHandle(user.name, user.email), bio: "" } });
-    setMe(stored);
-    setLocalPosts(readJson<LocalPosts>(POSTS_KEY, { posts: [], comments: {}, likeBonus: {} }));
+    if (!isLiveSupabaseMode()) {
+      const registry = readLocalVendorFollowers();
+      const follower = { id: `local-${user.email.toLowerCase()}`, handle: stored.profile.handle || defaultHandle(user.name, user.email), bio: stored.profile.bio };
+      for (const vendorId of stored.followed) {
+        registry[vendorId] = [...(registry[vendorId] || []).filter((item) => item.id !== follower.id), follower];
+      }
+      writeLocalVendorFollowers(registry);
+    }
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setMe(stored);
+      setLocalPosts(readJson<LocalPosts>(POSTS_KEY, { posts: [], comments: {}, likeBonus: {} }));
+    });
     (async () => {
       const sb = getSupabaseBrowserClient();
       if (!sb || !isLiveSupabaseMode() || !userId) { if (!cancelled) setMode("local"); return; }
@@ -133,9 +174,9 @@ export function useSocial(user: SocialUser, vendors: SeedVendor[], products: See
       setMode("remote");
     })().catch(() => { if (!cancelled) setMode("local"); });
     return () => { cancelled = true; };
-  }, [user.email, userId]);
+  }, [user.email, user.name, userId]);
 
-  const samples = useMemo(() => (mode === "local" ? sampleFeed(vendors, products) : []), [mode, vendors.map((v) => v.id).join("|"), products.length]);
+  const samples = useMemo(() => (mode === "local" ? sampleFeed(vendors, products) : []), [mode, vendors, products]);
   const posts = useMemo(() => {
     const base = mode === "remote" ? remotePosts : [...localPosts.posts.map((p) => ({ ...p, likeCount: p.likeCount + (localPosts.likeBonus[p.id] || 0) })), ...samples.map((p) => ({ ...p, likeCount: p.likeCount + (localPosts.likeBonus[p.id] || 0) }))];
     return base.filter((p) => !me.reported.includes(p.id)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -143,10 +184,10 @@ export function useSocial(user: SocialUser, vendors: SeedVendor[], products: See
 
   const myId = mode === "remote" ? userId || "" : `local-${user.email.toLowerCase()}`;
   const usage = useMemo(() => {
-    const since = Date.now() - 7 * DAY;
+    const since = now - 7 * DAY;
     const mine = posts.filter((p) => p.authorId === myId && new Date(p.createdAt).getTime() > since);
     return { photo: mine.filter((p) => p.kind === "photo").length, trial: mine.filter((p) => p.kind === "trial").length };
-  }, [posts, myId]);
+  }, [posts, myId, now]);
 
   const persistMe = useCallback((next: LocalUser) => { setMe(next); writeJson(userKey(user.email), next); }, [user.email]);
   const persistPosts = useCallback((next: LocalPosts) => { setLocalPosts(next); writeJson(POSTS_KEY, next); }, []);
@@ -201,10 +242,18 @@ export function useSocial(user: SocialUser, vendors: SeedVendor[], products: See
     persistMe({ ...current, followed: has ? current.followed.filter((id) => id !== vendorId) : [...current.followed, vendorId] });
     if (mode === "remote" && userId) {
       const sb = getSupabaseBrowserClient();
-      const res = has ? await sb?.from("vendor_follows").delete().eq("follower_id", userId).eq("vendor_id", vendorId) : await sb?.from("vendor_follows").insert({ follower_id: userId, vendor_id: vendorId });
+      const res = await sb?.rpc("follow_vendor", { p_vendor: vendorId, p_follow: !has });
       if (res?.error) { persistMe(current); throw new Error(res.error.message); }
+    } else {
+      const followers = readLocalVendorFollowers();
+      const id = `local-${user.email.toLowerCase()}`;
+      const currentFollowers = followers[vendorId] || [];
+      followers[vendorId] = has
+        ? currentFollowers.filter((item) => item.id !== id)
+        : [...currentFollowers.filter((item) => item.id !== id), { id, handle: meRef.current.profile.handle, bio: meRef.current.profile.bio }];
+      writeLocalVendorFollowers(followers);
     }
-  }, [mode, userId, persistMe]);
+  }, [mode, userId, user.email, persistMe]);
 
   const loadComments = useCallback(async (postId: string): Promise<SocialComment[]> => {
     if (mode === "remote") {

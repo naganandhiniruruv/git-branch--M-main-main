@@ -52,7 +52,7 @@ export function statusTimeLeft(expiresAt: string, now: number = Date.now()): str
 
 export type StatusAudience = {
   authorId: string; viewerId: string; expiresAt: string;
-  viewerFollowsAuthor: boolean; authorDiscoverable: boolean; authorPin?: Pin | null; viewerPin?: Pin | null; radiusKm: number; alreadyViewed: boolean;
+  viewerFollowsAuthor: boolean; authorDiscoverable: boolean; authorPrivateAccount?: boolean; authorPin?: Pin | null; viewerPin?: Pin | null; radiusKm: number; alreadyViewed: boolean;
 };
 /** Who may watch a status: not the author, not expired, not seen before, and either follows the author or is
  * within the radius of an author who chose to be on the map. */
@@ -61,6 +61,7 @@ export function statusVisibleTo(a: StatusAudience, now: number = Date.now()): bo
   if (new Date(a.expiresAt).getTime() <= now) return false;
   if (a.alreadyViewed) return false;
   if (a.viewerFollowsAuthor) return true;
+  if (a.authorPrivateAccount) return false;
   if (!a.authorDiscoverable || !a.authorPin || !a.viewerPin) return false;
   return distanceKm(a.viewerPin, a.authorPin) <= Math.min(a.radiusKm, 30);
 }

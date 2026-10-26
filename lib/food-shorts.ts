@@ -1,7 +1,7 @@
 // Food Shorts data layer — one hook, two interchangeable back-ends (same pattern as lib/social.ts):
 //   remote — Supabase tables, functions and the food-shorts storage bucket from
-//            supabase/V8_4_FOOD_SHORTS.sql. Customers read ONLY through nearby_food_shorts(),
-//            which applies the distance rule on the server.
+//            supabase/V8_4_FOOD_SHORTS.sql. Customers read through nearby_food_shorts(),
+//            which applies the distance rule and followed-vendor access on the server.
 //   local  — browser storage (+ IndexedDB for video), used automatically while that migration
 //            hasn't been applied or Supabase isn't configured. The same rules are applied in the
 //            browser so the feature is fully demonstrable. Flagged sample clips (no video) keep a
@@ -13,14 +13,14 @@ import { deleteLocalVideo, loadLocalVideoUrl, saveLocalVideo } from "@/lib/food-
 
 export type FoodShort = {
   id: string; vendorId: string; vendorName: string; vendorCategory: string; productId?: string | null;
-  title: string; caption: string; videoUrl?: string; thumbUrl?: string; durationS: number; reachKm: number;
+  title: string; caption: string; shopLink?: string | null; videoUrl?: string; thumbUrl?: string; durationS: number; reachKm: number;
   status: ShortStatus; viewCount: number; likeCount: number; createdAt: string; distanceKm?: number; sample?: boolean;
   videoKey?: string;
 };
 export type ShortsVendor = { id: string; businessName: string; category: string; latitude?: number; longitude?: number; radiusKm: number; verification?: string; operational?: string };
 export type ShortsUser = { email: string; name: string; userId?: string; role?: string; vendorId?: string };
 export type ViewerPin = { latitude?: number; longitude?: number };
-export type PublishInput = { title: string; caption: string; file: File; thumbDataUrl: string; durationS: number; reachKm: number; productId?: string | null };
+export type PublishInput = { title: string; caption: string; file: File; thumbDataUrl: string; durationS: number; reachKm: number; productId?: string | null; shopLink?: string };
 
 const KEY = "sheplates-food-shorts-v1";
 type LocalStore = { shorts: FoodShort[]; likes: Record<string, string[]>; views: Record<string, number> };
@@ -56,25 +56,27 @@ function sampleShorts(vendors: ShortsVendor[]): FoodShort[] {
 }
 
 type RemoteRow = {
-  id: string; vendor_id: string; vendor_name?: string; vendor_category?: string; product_id: string | null; title: string; caption: string;
+  id: string; vendor_id: string; vendor_name?: string; vendor_category?: string; product_id: string | null; shop_link?: string | null; title: string; caption: string;
   video_url: string; thumb_url: string | null; duration_s: number | string; reach_km: number | string; status?: ShortStatus; view_count: number;
   like_count?: number | string; liked?: boolean; created_at: string; distance_km?: number; food_short_likes?: { count: number }[];
 };
 const mapRemote = (r: RemoteRow, vendorName = ""): FoodShort => ({
   id: r.id, vendorId: r.vendor_id, vendorName: r.vendor_name || vendorName, vendorCategory: r.vendor_category || "", productId: r.product_id,
-  title: r.title, caption: r.caption, videoUrl: r.video_url, thumbUrl: r.thumb_url || undefined, durationS: Number(r.duration_s), reachKm: Number(r.reach_km),
+  title: r.title, caption: r.caption, shopLink: r.shop_link, videoUrl: r.video_url, thumbUrl: r.thumb_url || undefined, durationS: Number(r.duration_s), reachKm: Number(r.reach_km),
   status: r.status || "active", viewCount: r.view_count, likeCount: Number(r.like_count ?? r.food_short_likes?.[0]?.count ?? 0), createdAt: r.created_at, distanceKm: r.distance_km,
 });
 
 export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer: ViewerPin) {
   const [mode, setMode] = useState<"loading" | "remote" | "local">("loading");
   const [remoteFeed, setRemoteFeed] = useState<FoodShort[]>([]);
+  const [feedError, setFeedError] = useState("");
   const [remoteMine, setRemoteMine] = useState<FoodShort[]>([]);
   const [remoteLiked, setRemoteLiked] = useState<string[]>([]);
   const [store, setStore] = useState<LocalStore>(EMPTY);
   const [videoUrls, setVideoUrls] = useState<Record<string, string>>({});
   const viewedRef = useRef<Set<string>>(new Set());
-  const storeRef = useRef(store); storeRef.current = store;
+  const storeRef = useRef(store);
+  useEffect(() => { storeRef.current = store; }, [store]);
   const { userId, role, vendorId, email } = user;
   const lat = viewer.latitude, lng = viewer.longitude;
   const pinOk = Number.isFinite(lat) && Number.isFinite(lng);
@@ -84,7 +86,7 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
   useEffect(() => {
     if (!email) return;
     let cancelled = false;
-    setStore(readStore());
+    queueMicrotask(() => { if (!cancelled) setStore(readStore()); });
     (async () => {
       const sb = getSupabaseBrowserClient();
       if (!sb || !isLiveSupabaseMode() || !userId) { if (!cancelled) setMode("local"); return; }
@@ -97,20 +99,46 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
   const refresh = useCallback(async () => {
     const sb = getSupabaseBrowserClient();
     if (mode !== "remote" || !sb) return;
-    if (role === "customer" && pinOk) {
-      const res = await sb.rpc("nearby_food_shorts", { p_lat: lat, p_lng: lng, p_radius_km: 30, p_limit: 100 });
-      if (!res.error) {
+    if (role === "customer") {
+      const res = await sb.rpc("nearby_food_shorts", { p_lat: lat ?? null, p_lng: lng ?? null, p_radius_km: 30, p_limit: 100 });
+      if (res.error) {
+        console.error("Food Shorts feed refresh failed", res.error);
+        setFeedError(res.error.message);
+      } else {
+        setFeedError("");
         const rows = (res.data || []) as RemoteRow[];
         setRemoteFeed(rows.map((r) => mapRemote(r)));
         setRemoteLiked(rows.filter((r) => r.liked).map((r) => r.id));
       }
     }
     if (role === "vendor" && vendorId) {
-      const res = await sb.from("food_shorts").select("id,vendor_id,product_id,title,caption,video_url,thumb_url,duration_s,reach_km,status,view_count,created_at,food_short_likes(count)").eq("vendor_id", vendorId).neq("status", "removed").order("created_at", { ascending: false });
+      const res = await sb.from("food_shorts").select("id,vendor_id,product_id,shop_link,title,caption,video_url,thumb_url,duration_s,reach_km,status,view_count,created_at,food_short_likes(count)").eq("vendor_id", vendorId).neq("status", "removed").order("created_at", { ascending: false });
       if (!res.error) { const name = vendors.find((v) => v.id === vendorId)?.businessName || ""; setRemoteMine(((res.data || []) as unknown as RemoteRow[]).map((r) => mapRemote(r, name))); }
     }
-  }, [mode, role, vendorId, pinOk, lat, lng, vendors]);
-  useEffect(() => { void refresh(); }, [mode, role, vendorId, pinOk, lat, lng]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mode, role, vendorId, lat, lng, vendors]);
+  useEffect(() => { const initial = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(initial); }, [refresh]);
+
+  useEffect(() => {
+    if (role !== "customer") return;
+    const refreshOnFocus = () => { if (document.visibilityState === "visible") void refresh(); };
+    const interval = window.setInterval(() => void refresh(), 30_000);
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+  }, [role, refresh]);
+
+  useEffect(() => {
+    if (mode !== "local") return;
+    const syncLocalShorts = (event: StorageEvent) => {
+      if (event.key === KEY) setStore(readStore());
+    };
+    window.addEventListener("storage", syncLocalShorts);
+    return () => window.removeEventListener("storage", syncLocalShorts);
+  }, [mode]);
 
   // resolve stored (IndexedDB) videos to playable URLs
   useEffect(() => {
@@ -145,6 +173,27 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
 
   const forVendor = useCallback((id: string, radiusKm: number) => nearby(radiusKm).filter((s) => s.vendorId === id), [nearby]);
 
+  const following = useCallback((vendorIds: string[]): FoodShort[] => {
+    if (!vendorIds.length) return [];
+    const followed = new Set(vendorIds);
+    if (mode === "remote") return remoteFeed.filter((short) => followed.has(short.vendorId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return store.shorts
+      .filter((short) => followed.has(short.vendorId) && short.status === "active")
+      .flatMap((short) => {
+        const vendor = vendorById(short.vendorId);
+        if (!vendor || vendor.verification !== "Verified" || vendor.operational !== "Active") return [];
+        return [{
+          ...short,
+          videoUrl: short.videoKey ? videoUrls[short.videoKey] : short.videoUrl,
+          vendorName: vendor.businessName,
+          vendorCategory: vendor.category,
+          likeCount: short.likeCount + Object.values(store.likes).filter((ids) => ids.includes(short.id)).length,
+          viewCount: short.viewCount + (store.views[short.id] || 0),
+        }];
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [mode, remoteFeed, store, vendorById, videoUrls]);
+
   const mine = useMemo<FoodShort[]>(() => {
     if (role !== "vendor" || !vendorId) return [];
     if (mode === "remote") return remoteMine;
@@ -161,6 +210,12 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
     const fileCheck = checkVideoFile(input.file); if (!fileCheck.ok) throw new Error(fileCheck.message);
     const lengthCheck = checkVideoDuration(input.durationS); if (!lengthCheck.ok) throw new Error(lengthCheck.message);
     if (!input.title.trim()) throw new Error("Give the short a title");
+    const shopLink = input.shopLink?.trim();
+    if (shopLink) {
+      let parsedShopLink: URL;
+      try { parsedShopLink = new URL(shopLink); } catch { throw new Error("Enter a valid shop link beginning with https://"); }
+      if (!["https:", "http:"].includes(parsedShopLink.protocol)) throw new Error("Shop links must use http:// or https://");
+    }
     const today = mine.filter((s) => Date.now() - new Date(s.createdAt).getTime() < 86_400_000).length;
     if (today >= MAX_SHORTS_PER_DAY) throw new Error(`Daily limit reached: ${MAX_SHORTS_PER_DAY} Food Shorts per day`);
     const vendorName = vendorById(vendorId)?.businessName || "";
@@ -175,7 +230,7 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
       await sb.storage.from("food-shorts").upload(thumbPath, thumbBlob, { contentType: "image/jpeg" });
       const videoUrl = sb.storage.from("food-shorts").getPublicUrl(videoPath).data.publicUrl;
       const thumbUrl = sb.storage.from("food-shorts").getPublicUrl(thumbPath).data.publicUrl;
-      const res = await sb.rpc("create_food_short", { p_title: input.title, p_caption: input.caption, p_video_url: videoUrl, p_thumb_url: thumbUrl, p_duration_s: input.durationS, p_reach_km: input.reachKm, p_product_id: input.productId || null }).single();
+      const res = await sb.rpc("create_food_short", { p_title: input.title, p_caption: input.caption, p_video_url: videoUrl, p_thumb_url: thumbUrl, p_duration_s: input.durationS, p_reach_km: input.reachKm, p_product_id: input.productId || null, p_shop_link: shopLink || null }).single();
       if (res.error || !res.data) { await sb.storage.from("food-shorts").remove([videoPath, thumbPath]); throw new Error(res.error?.message || "The short could not be published"); }
       const short = mapRemote(res.data as RemoteRow, vendorName);
       setRemoteMine((c) => [short, ...c]);
@@ -185,7 +240,7 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
     await saveLocalVideo(id, input.file);
     const url = URL.createObjectURL(input.file);
     setVideoUrls((c) => ({ ...c, [id]: url }));
-    const short: FoodShort = { id, vendorId, vendorName, vendorCategory: vendorById(vendorId)?.category || "", productId: input.productId || null, title: input.title.trim().slice(0, 80), caption: input.caption.trim().slice(0, 300), thumbUrl: input.thumbDataUrl, durationS: input.durationS, reachKm: input.reachKm, status: "active", viewCount: 0, likeCount: 0, createdAt: new Date().toISOString(), videoKey: id };
+    const short: FoodShort = { id, vendorId, vendorName, vendorCategory: vendorById(vendorId)?.category || "", productId: input.productId || null, title: input.title.trim().slice(0, 80), caption: input.caption.trim().slice(0, 300), shopLink: shopLink || null, thumbUrl: input.thumbDataUrl, durationS: input.durationS, reachKm: input.reachKm, status: "active", viewCount: 0, likeCount: 0, createdAt: new Date().toISOString(), videoKey: id };
     persist({ ...storeRef.current, shorts: [short, ...storeRef.current.shorts] });
     return short;
   }, [role, vendorId, mine, mode, userId, vendorById, persist]);
@@ -233,7 +288,7 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
     const current = storeRef.current; persist({ ...current, views: { ...current.views, [id]: (current.views[id] || 0) + 1 } });
   }, [mode, persist]);
 
-  return { mode, nearby, forVendor, mine, liked, publish, setStatus, remove, toggleLike, recordView, refresh };
+  return { mode, nearby, following, forVendor, mine, liked, feedError, publish, setStatus, remove, toggleLike, recordView, refresh };
 }
 
 export type ShortsApi = ReturnType<typeof useFoodShorts>;

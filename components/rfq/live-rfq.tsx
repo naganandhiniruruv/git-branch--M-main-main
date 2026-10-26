@@ -2,7 +2,7 @@
 // Live RFQ screens (Supabase mode): the customer's "My quotations", the Package 3 vendor's
 // "Quote opportunities", and operations' RFQ desk. Demo mode keeps the original local screens.
 // Every rule (who is invited, who may quote, who may accept) is enforced by the database.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BadgeCheck, Check, ClipboardCheck, RefreshCcw, WalletCards } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,17 +13,23 @@ const day = (iso: string) => new Date(iso).toLocaleDateString("en-IN", { day: "n
 const chip = (status: string) => status === "awarded" || status === "selected" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : status === "quotes_received" || status === "submitted" ? "border-sky-200 bg-sky-50 text-sky-800" : status === "not_selected" || status === "closed" ? "border-stone-200 bg-stone-50 text-stone-500" : "border-amber-200 bg-amber-50 text-amber-800";
 const Chip = ({ status, label }: { status: string; label?: string }) => <span className={`inline-flex shrink-0 rounded-full border px-3 py-1 text-[11px] font-black ${chip(status)}`}>{label || rfqStatusLabel(status)}</span>;
 
-function useLoader<T>(load: () => Promise<T>, deps: unknown[], pollMs = 15_000) {
+function useLoader<T>(load: () => Promise<T>, pollMs = 15_000) {
   const [data, setData] = useState<T | null>(null); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
-  const run = useCallback(async () => { setBusy(true); try { setData(await load()); setError(""); } catch (e) { setError(e instanceof Error ? e.message : "Could not load"); } finally { setBusy(false); } }, deps); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { void run(); const t = window.setInterval(() => void run(), pollMs); return () => window.clearInterval(t); }, [run, pollMs]);
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  const run = useCallback(async () => { setBusy(true); try { setData(await loadRef.current()); setError(""); } catch (e) { setError(e instanceof Error ? e.message : "Could not load"); } finally { setBusy(false); } }, []);
+  useEffect(() => {
+    const initial = window.setTimeout(() => void run(), 0);
+    const interval = window.setInterval(() => void run(), pollMs);
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); };
+  }, [run, pollMs]);
   return { data, error, busy, reload: run };
 }
 
 /* ---------------------------------------------------------------- customer */
 
 export function LiveCustomerRfqs() {
-  const { data, error, busy, reload } = useLoader(loadCustomerRfqs, []);
+  const { data, error, busy, reload } = useLoader(loadCustomerRfqs);
   const [confirm, setConfirm] = useState(""); const [accepting, setAccepting] = useState("");
   async function accept(quoteId: string) {
     setAccepting(quoteId);
@@ -90,7 +96,7 @@ function QuoteForm({ rfq, onSent }: { rfq: VendorRfq; onSent: () => void }) {
 
 export function LiveVendorRfqs({ vendor }: { vendor: VendorLite }) {
   const entitled = vendor.plan === "Premium";
-  const { data, error, busy, reload } = useLoader(() => (entitled ? loadVendorRfqs(vendor.id) : Promise.resolve([] as VendorRfq[])), [vendor.id, entitled]);
+  const { data, error, busy, reload } = useLoader(() => (entitled ? loadVendorRfqs(vendor.id) : Promise.resolve([] as VendorRfq[])));
   return <div className="space-y-6">
     <div className="flex flex-wrap items-end justify-between gap-3"><div className="min-w-0"><p className="text-[10px] font-black uppercase tracking-[.19em] text-[#5f8f2d] sm:text-xs">PACKAGE 3 FEATURE</p><h1 className="mt-1.5 text-lg font-black leading-[1.15] tracking-[-.03em] sm:text-xl">Local RFQ opportunities</h1>
       <p className="mt-2 max-w-3xl text-[13px] leading-6 text-stone-500">You only see RFQs from customers inside your own service radius. Prices stay sealed from other vendors until the customer chooses.</p></div>
@@ -111,7 +117,7 @@ export function LiveVendorRfqs({ vendor }: { vendor: VendorLite }) {
 /* ---------------------------------------------------------------- operations */
 
 export function LiveRfqDesk() {
-  const { data, error } = useLoader(loadOpsRfqs, [], 30_000);
+  const { data, error } = useLoader(loadOpsRfqs, 30_000);
   return <div className="space-y-6">
     <div className="min-w-0"><p className="text-[10px] font-black uppercase tracking-[.19em] text-[#5f8f2d] sm:text-xs">RFQ CONTROL</p><h1 className="mt-1.5 text-lg font-black leading-[1.15] tracking-[-.03em] sm:text-xl">Monthly requirement desk</h1><p className="mt-2 max-w-3xl text-[13px] leading-6 text-stone-500">Every customer requirement, how many Package 3 vendors were invited and how many quoted. An RFQ with no invited vendor needs attention.</p></div>
     {error && <p role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p>}

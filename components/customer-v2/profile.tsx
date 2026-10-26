@@ -2,6 +2,8 @@
 // Public social profile + account hub (Profile tab), and the public vendor
 // profile that opens from vendor cards across the app.
 import { useState } from "react";
+import type * as React from "react";
+import Image from "next/image";
 import { BadgeCheck, CalendarDays, ClipboardCheck, Heart, HelpCircle, ListChecks, LogOut, Package, ShoppingCart, TicketCheck, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -12,7 +14,7 @@ import { Avatar, EmptyState, PhotoTile, SegTabs, Stars, closesIn, money, priceOf
 import { vendorDistanceKm } from "./discover";
 import type { FoodShort } from "@/lib/food-shorts";
 import { ShortThumb } from "./shorts";
-import { DiscoverCard, FollowListDialog } from "./people";
+import { DiscoverCard, FollowListDialog, FollowRequestsPanel } from "./people";
 import type { PeopleApi } from "@/lib/people";
 import type { StatusesApi } from "@/lib/statuses";
 
@@ -33,11 +35,20 @@ function EditProfileDialog({ open, onClose, social, name }: { open: boolean; onC
   </DialogContent></Dialog>;
 }
 
-export function ProfileTab({ session, state, social, people, statuses, onNavigate, onSetLocation, onReplayTour, onSignOut }: {
-  session: { name: string; email: string }; state: V3State; social: SocialApi; people: PeopleApi; statuses: StatusesApi; onNavigate: (label: string) => void; onSetLocation: () => void; onReplayTour: () => void; onSignOut: () => void;
+export function ProfileTab({ session, state, setState, social, people, statuses, onNavigate, onSetLocation, onOpenVendor, onReplayTour, onSignOut }: {
+  session: { name: string; email: string }; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; social: SocialApi; people: PeopleApi; statuses: StatusesApi; onNavigate: (label: string) => void; onSetLocation: () => void; onOpenVendor: (vendorId: string) => void; onReplayTour: () => void; onSignOut: () => void;
 }) {
-  const [editing, setEditing] = useState(false); const [list, setList] = useState<null | "followers" | "following">(null);
+  const [editing, setEditing] = useState(false); const [list, setList] = useState<null | "followers" | "following">(null); const [vendorListOpen, setVendorListOpen] = useState(false); const [privacyBusy, setPrivacyBusy] = useState(false);
   const customer = state.customers.find((c) => c.email === session.email);
+  async function setAccountPrivacy(privateAccount: boolean) {
+    setPrivacyBusy(true);
+    try {
+      await people.setPrivateAccount(privateAccount);
+      setState((current) => ({ ...current, customers: current.customers.map((item) => item.email === session.email ? { ...item, privateAccount } : item) }));
+      toast.success(privateAccount ? "Private account enabled" : "Public account enabled");
+    } catch (error) { toast.error(error instanceof Error ? error.message : "Account privacy could not be updated"); }
+    finally { setPrivacyBusy(false); }
+  }
   const myReviews = state.reviews.filter((r) => r.customerEmail === session.email);
   const links: [string, React.ComponentType<{ className?: string }>][] = [["Profile & food", UserRound], ["Wishlist", Heart], ["Orders", Package], ["My schedule", CalendarDays], ["Monthly requirement", ListChecks], ["My quotations", ClipboardCheck], ["Ticket centre", TicketCheck]];
   const active = statuses.mine.length;
@@ -47,13 +58,20 @@ export function ProfileTab({ session, state, social, people, statuses, onNavigat
         <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-black tracking-[-.02em]">{session.name}</h1><div className="text-sm font-bold text-stone-500">@{social.profile.handle}</div>
           <div className="mt-1 text-xs font-bold text-stone-500">{shortArea(customer?.address)}</div></div></div>
       <p className="mt-3 text-sm leading-6 text-stone-600">{social.profile.bio || "Add a bio so neighbours know what you love to eat."}</p>
-      <div className="mt-4 grid grid-cols-3 gap-2 text-center" data-testid="profile-stats">
-        <button type="button" onClick={() => setList("followers")} className="rounded-xl py-1 transition hover:bg-stone-50" aria-label={`Followers ${people.followCounts.followers}`}><div className="text-lg font-black">{people.followCounts.followers}</div><div className="text-[11px] font-bold text-stone-500">Followers</div></button>
-        <button type="button" onClick={() => setList("following")} className="rounded-xl py-1 transition hover:bg-stone-50" aria-label={`Following ${people.followCounts.following}`}><div className="text-lg font-black">{people.followCounts.following}</div><div className="text-[11px] font-bold text-stone-500">Following</div></button>
-        <div className="py-1"><div className="text-lg font-black">{social.followed.length}</div><div className="text-[11px] font-bold text-stone-500">Vendors</div></div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2" data-testid="profile-stats">
+        <section className="rounded-2xl bg-stone-50 p-3" aria-label="People followers and following"><h2 className="px-1 text-[10px] font-black uppercase tracking-[.12em] text-stone-400">People</h2><div className="mt-1 grid grid-cols-2 gap-1 text-center">
+          <button type="button" onClick={() => setList("followers")} className="rounded-xl py-1 transition hover:bg-white" aria-label={`People followers ${people.followCounts.followers}`}><div className="text-lg font-black">{people.followCounts.followers}</div><div className="text-[11px] font-bold text-stone-500">Followers</div></button>
+          <button type="button" onClick={() => setList("following")} className="rounded-xl py-1 transition hover:bg-white" aria-label={`People following ${people.followCounts.following}`}><div className="text-lg font-black">{people.followCounts.following}</div><div className="text-[11px] font-bold text-stone-500">Following</div></button>
+        </div></section>
+        <section className="rounded-2xl bg-stone-50 p-3" aria-label="Vendors you follow"><h2 className="px-1 text-[10px] font-black uppercase tracking-[.12em] text-stone-400">Vendors</h2><button type="button" onClick={() => setVendorListOpen(true)} className="mt-1 w-full rounded-xl py-1 text-center transition hover:bg-white" aria-label={`Vendors following ${social.followed.length}`}><div className="text-lg font-black">{social.followed.length}</div><div className="text-[11px] font-bold text-stone-500">Vendors I follow</div></button></section>
       </div>
       <button type="button" onClick={() => setEditing(true)} className="mt-4 h-11 w-full rounded-xl border border-stone-300 text-sm font-black transition hover:border-[#e0194f] hover:text-[#e0194f]">Edit Profile</button>
     </section>
+    <section className="flex items-center justify-between gap-4 rounded-[22px] bg-white p-4 shadow-sm ring-1 ring-stone-200/70" aria-label="Account privacy">
+      <div className="min-w-0"><h2 className="text-sm font-black">{people.privateAccount ? "Private account" : "Public account"}</h2><p className="mt-1 text-xs leading-5 text-stone-500">{people.privateAccount ? "People must request to follow you. You approve each request." : "Other customers can follow you without approval."}</p></div>
+      <button type="button" role="switch" aria-label="Private account" aria-checked={people.privateAccount} disabled={privacyBusy} onClick={() => void setAccountPrivacy(!people.privateAccount)} className={`relative h-7 w-12 shrink-0 rounded-full transition disabled:opacity-60 ${people.privateAccount ? "bg-[#e0194f]" : "bg-stone-300"}`}><span className={`absolute top-0.5 size-6 rounded-full bg-white shadow transition-all ${people.privateAccount ? "left-[22px]" : "left-0.5"}`} /></button>
+    </section>
+    <FollowRequestsPanel people={people} />
     <section className="flex items-center justify-between gap-3 rounded-[22px] bg-white p-4 shadow-sm ring-1 ring-stone-200/70" aria-label="Your status">
       <div className="min-w-0"><h2 className="text-sm font-black">Your status</h2><p className="mt-0.5 text-xs font-bold text-stone-500">{active ? `${active} active. Each disappears after 24 hours.` : "Share a photo or a 30 second video. It disappears after 24 hours."}</p></div>
       <button type="button" onClick={() => onNavigate("Stories")} className="shrink-0 rounded-full bg-[#e0194f] px-4 py-2 text-xs font-black text-white">{active ? "View" : "Add status"}</button>
@@ -69,6 +87,7 @@ export function ProfileTab({ session, state, social, people, statuses, onNavigat
     </section>
     {editing && <EditProfileDialog open onClose={() => setEditing(false)} social={social} name={session.name} />}
     <FollowListDialog open={list !== null} kind={list || "followers"} onClose={() => setList(null)} people={people} />
+    <Dialog open={vendorListOpen} onOpenChange={(value) => !value && setVendorListOpen(false)}><DialogContent className="max-h-[85vh] overflow-y-auto rounded-[28px] sm:max-w-md"><DialogHeader><DialogTitle className="text-lg font-black">Vendors I follow</DialogTitle><DialogDescription>The stores you follow on ShePlates appear here.</DialogDescription></DialogHeader>{social.followed.length ? <div className="space-y-2">{social.followed.map((vendorId) => { const vendor = state.vendors.find((item) => item.id === vendorId); if (!vendor) return null; return <button key={vendorId} type="button" onClick={() => { setVendorListOpen(false); onOpenVendor(vendorId); }} className="flex w-full items-center gap-3 rounded-2xl border border-stone-200/70 bg-white p-3 text-left transition hover:bg-stone-50"><span className="grid size-10 place-items-center rounded-xl bg-[#fff0f4] text-sm font-black text-[#e0194f]">{vendor.businessName.slice(0, 1)}</span><span className="min-w-0 flex-1"><b className="block truncate text-sm">{vendor.businessName}</b><span className="block truncate text-xs text-stone-500">{vendor.category}</span></span><span className="text-xs font-black text-[#e0194f]">View</span></button>; })}</div> : <EmptyState emoji="🏪" title="No followed vendors yet" body="Open a vendor profile from Marketplace and tap Follow to save a store here." />}</DialogContent></Dialog>
   </div>;
 }
 
@@ -91,10 +110,10 @@ function VendorDropRow({ drop, onClaim }: { drop: FoodDrop; onClaim: (d: FoodDro
     <div className="text-right"><div className="font-black">{money(drop.dropPrice)}</div><button type="button" disabled={busy} onClick={async () => { setBusy(true); try { await onClaim(drop, 1); } finally { setBusy(false); } }} className="mt-1 rounded-full bg-[#e0194f] px-4 py-1.5 text-xs font-black text-white disabled:opacity-50">Add +</button></div></div>;
 }
 
-export function VendorProfileDialog({ vendorId, onClose, state, social, profile, onAdd, onPlan, onClaimDrop, shorts = [], onOpenShorts }: {
+export function VendorProfileDialog({ vendorId, onClose, state, social, profile, onAdd, onPlan, onClaimDrop, onFollowed, shorts = [], onOpenShorts }: {
   shorts?: FoodShort[]; onOpenShorts?: (list: FoodShort[], index: number) => void;
   vendorId: string | null; onClose: () => void; state: V3State; social: SocialApi; profile: Coords;
-  onAdd: (p: Product) => void; onPlan: (p: Product) => void; onClaimDrop: (d: FoodDrop, q: number) => Promise<void>;
+  onAdd: (p: Product) => void; onPlan: (p: Product) => void; onClaimDrop: (d: FoodDrop, q: number) => Promise<void>; onFollowed?: (vendor: V3State["vendors"][number]) => void;
 }) {
   const [tab, setTab] = useState<VendorTabKey>("Menu");
   const vendor = vendorId ? state.vendors.find((v) => v.id === vendorId) : undefined;
@@ -106,16 +125,16 @@ export function VendorProfileDialog({ vendorId, onClose, state, social, profile,
   const photo = vendorPhoto(state, vendor);
   return <Dialog open onOpenChange={(v) => !v && onClose()}><DialogContent className="max-h-[94vh] gap-0 overflow-y-auto overflow-x-hidden rounded-[28px] p-0 sm:max-w-3xl [&>*]:min-w-0">
     <DialogHeader className="sr-only"><DialogDescription>{vendor.businessName} — public vendor profile</DialogDescription></DialogHeader>
-    <div className="relative h-40 sm:h-52">{vendor.bannerUrl ? <img src={vendor.bannerUrl} alt="" className="h-full w-full object-cover" /> : <PhotoTile category={vendor.category} className="h-full w-full" emojiSize={90} />}</div>
+    <div className="relative h-40 sm:h-52">{vendor.bannerUrl ? <Image src={vendor.bannerUrl} alt="" fill unoptimized sizes="(max-width: 768px) 100vw, 768px" className="object-cover" /> : <PhotoTile category={vendor.category} className="h-full w-full" emojiSize={90} />}</div>
     <div className="px-5 pb-5"><div className="-mt-10 flex items-end gap-3"><PhotoTile imageUrl={photo} category={vendor.category} className="size-20 shrink-0 rounded-2xl border-4 border-white shadow-lg" emojiSize={34} /></div>
       <div className="mt-3 flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><DialogTitle asChild><h2 className="flex items-center gap-1.5 text-xl font-black leading-tight tracking-[-.02em]">{vendor.businessName}{vendor.verification === "Verified" && <BadgeCheck className="size-5 text-sky-500" aria-label="Verified" />}</h2></DialogTitle>
         <div className="mt-0.5 text-sm font-bold text-stone-500">{vendor.category} · {shortArea(vendor.address)}{distance !== null ? ` · ${distance.toFixed(1)} km` : ""}</div>
         <div className="mt-1 flex items-center gap-1.5 text-sm font-black">{rating ? <><Stars value={rating.average} /><span>{rating.average.toFixed(1)}</span><span className="font-bold text-stone-400">({rating.count} reviews)</span></> : <span className="text-stone-400">No reviews yet</span>}</div></div>
-        <button type="button" aria-pressed={following} onClick={() => void social.toggleFollow(vendor.id).then(() => toast.success(following ? `Unfollowed ${vendor.businessName}` : `Following ${vendor.businessName}`)).catch((e) => toast.error(e instanceof Error ? e.message : "Could not update follow"))} className={`h-11 rounded-full px-7 text-sm font-black transition ${following ? "border border-stone-300 bg-white text-stone-700" : "bg-[#e0194f] text-white shadow-[0_10px_24px_rgba(224,25,79,.3)]"}`}>{following ? "Following" : "Follow"}</button></div>
+        <button type="button" aria-pressed={following} onClick={() => void social.toggleFollow(vendor.id).then(() => { if (!following) onFollowed?.(vendor); toast.success(following ? `Unfollowed ${vendor.businessName}` : `Following ${vendor.businessName}`); }).catch((e) => toast.error(e instanceof Error ? e.message : "Could not update follow"))} className={`h-11 rounded-full px-7 text-sm font-black transition ${following ? "border border-stone-300 bg-white text-stone-700" : "bg-[#e0194f] text-white shadow-[0_10px_24px_rgba(224,25,79,.3)]"}`}>{following ? "Following" : "Follow"}</button></div>
       <div className="mt-3 flex flex-wrap gap-2">{vendor.verification === "Verified" && <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">FSSAI Verified</span>}{vendor.category === "Home food" && <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-black text-amber-700">Home Food</span>}{vendor.delivery && <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-black text-stone-600">Delivery</span>}{vendor.pickup && <span className="rounded-full bg-stone-100 px-3 py-1 text-xs font-black text-stone-600">Pickup</span>}<span className={`rounded-full px-3 py-1 text-xs font-black ${vendor.openToday ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>{vendor.openToday ? "Open now" : "Closed today"}</span></div>
       <SegTabs tabs={(shorts.length ? VENDOR_TABS : VENDOR_TABS.filter((t) => t !== "Shorts")) as readonly VendorTabKey[]} value={tab} onChange={setTab} className="mt-4" />
       <div className="mt-4 space-y-2.5">
-        {tab === "Menu" && (products.length ? <><h3 className="text-sm font-black">Today's Menu ({products.length})</h3>{products.map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} />)}</> : <EmptyState emoji="🍽️" title="Nothing on the menu today" body="This vendor hasn't published any items right now." />)}
+        {tab === "Menu" && (products.length ? <><h3 className="text-sm font-black">Today&apos;s Menu ({products.length})</h3>{products.map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} />)}</> : <EmptyState emoji="🍽️" title="Nothing on the menu today" body="This vendor hasn&apos;t published any items right now." />)}
         {tab === "New Products" && (products.length ? products.slice(0, 4).map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} isNew />) : <EmptyState emoji="✨" title="No new products" body="Newly added items appear here first." />)}
         {tab === "Subscriptions" && (products.length ? <><p className="text-xs font-bold text-stone-500">Pick any item and set how often you want it — daily, weekly or on custom days.</p>{products.map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} planLabel="Subscribe" />)}</> : <EmptyState emoji="🔁" title="No subscription items" body="Items you can subscribe to appear here." />)}
         {tab === "Food Drops" && (drops.length ? drops.map((d) => <VendorDropRow key={d.id} drop={d} onClaim={onClaimDrop} />) : <EmptyState emoji="⚡" title="No live drops" body="Follow this vendor to hear first when they post surplus or a limited batch." />)}

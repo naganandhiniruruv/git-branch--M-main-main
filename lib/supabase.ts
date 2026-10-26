@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { Role } from "./sheplates-data";
 
 let browserClient: SupabaseClient | null = null;
 
@@ -86,7 +87,18 @@ export async function liveSignIn(email: string, password: string) {
         : profileError.message,
     );
   }
-  return { user: data.user, profile: profile as { full_name: string; role: string; vendor_id: string | null; tours_completed?: string[] } };
+  const liveProfile = profile as { full_name: string; role: string; vendor_id: string | null; tours_completed?: string[] } | null;
+  if (!liveProfile || !["customer", "vendor", "operations", "admin"].includes(liveProfile.role)) {
+    throw new Error("This account has an invalid ShePlates role profile. Contact your administrator.");
+  }
+  return {
+    user: data.user,
+    profile: {
+      ...liveProfile,
+      role: liveProfile.role as Role,
+      tours_completed: liveProfile.tours_completed || [],
+    },
+  };
 }
 
 export async function liveSignUp(input: {
@@ -117,9 +129,55 @@ export async function liveSignUp(input: {
   return signedIn.data;
 }
 
+export async function saveLiveCustomerPrivacy(privateAccount: boolean) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.rpc("set_private_account", { p_private: privateAccount });
+  if (result.error) throw result.error;
+}
+
 export async function liveSignOut() {
   const supabase = getSupabaseBrowserClient();
   if (supabase) await supabase.auth.signOut();
+}
+
+export function getAppUrl() {
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5173";
+}
+
+export async function sendPasswordResetEmail(email: string, redirectTo?: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to send password reset emails.");
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("Enter a valid email address.");
+  }
+  const defaultRedirect = `${getAppUrl().replace(/\/$/, "")}/reset-password`;
+  const targetRedirect = redirectTo || defaultRedirect;
+  const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+    redirectTo: targetRedirect,
+  });
+  // Do NOT surface Supabase errors (rate limit, user not found, etc.) to the UI.
+  // For security and UX, always show the success banner so we don't leak whether
+  // an account exists for a given email, and so transient limits don't confuse users.
+  void error;
+  return { success: true, email: normalizedEmail };
+}
+
+export async function updatePassword(newPassword: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to update passwords.");
+  if (!newPassword || newPassword.length < 8) {
+    throw new Error("Use a password with at least 8 characters.");
+  }
+  const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) {
+    throw new Error(error.message || "Could not update your password. The reset link may have expired or is invalid.");
+  }
+  return data;
 }
 
 export async function getAccessToken() {
@@ -191,15 +249,19 @@ export async function loadLiveVendorWorkspace(vendorId: string) {
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
   const vendorPromise = supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id,vendor_plans(code,name)").eq("id", vendorId).single();
   const documentsPromise = supabase.from("vendor_documents").select("document_number,storage_path,expiry_date,verification_status").eq("vendor_id", vendorId).order("created_at", { ascending: false }).limit(1);
-  let products = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url,nutrition_status,nutrition_confidence,nutrition_note").eq("vendor_id", vendorId).order("created_at", { ascending: false });
-  if (products.error && /nutrition_status|nutrition_confidence|nutrition_note/i.test(products.error.message || "")) {
-    products = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url").eq("vendor_id", vendorId).order("created_at", { ascending: false });
+  const productResult = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url,nutrition_status,nutrition_confidence,nutrition_note").eq("vendor_id", vendorId).order("created_at", { ascending: false });
+  let productRows = productResult.data as LiveMenuItemRow[] | null;
+  let productError = productResult.error;
+  if (productError && /nutrition_status|nutrition_confidence|nutrition_note/i.test(productError.message || "")) {
+    const fallbackProducts = await supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url").eq("vendor_id", vendorId).order("created_at", { ascending: false });
+    productRows = fallbackProducts.data as LiveMenuItemRow[] | null;
+    productError = fallbackProducts.error;
   }
   const [vendor, documents] = await Promise.all([vendorPromise, documentsPromise]);
   if (vendor.error) throw vendor.error;
-  if (products.error) throw products.error;
+  if (productError) throw productError;
   if (documents.error) throw documents.error;
-  return { vendor: vendor.data as LiveVendorRow, products: (products.data || []) as LiveMenuItemRow[], document: documents.data?.[0] || null };
+  return { vendor: vendor.data as LiveVendorRow, products: productRows || [], document: documents.data?.[0] || null };
 }
 
 export async function loadLiveOperationsWorkspace() {
@@ -236,12 +298,30 @@ export type CampaignSaveInput = {
 export async function saveLiveCampaign(input: CampaignSaveInput) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const details = input.headline === undefined ? {} : {
-    headline: input.headline.trim(), subline: (input.subline || "").trim(), emoji: input.emoji || "🎉", cta_label: (input.ctaLabel || "Shop now").trim() || "Shop now",
-    target_type: input.targetType || "none", target_value: input.targetType && input.targetType !== "none" ? input.targetValue || null : null,
-    segment: input.segment || "everyone", starts_at: input.startsAt || null, ends_at: input.endsAt || null, priority: Math.round(input.priority ?? 0),
+  const row: Record<string, string | number | null> = {
+    ...(input.id ? { id: input.id } : {}),
+    name: input.name,
+    audience: input.audience,
+    offer: input.offer,
+    channel: input.channel,
+    status: input.status.toLowerCase(),
+    ai_rationale: input.aiRationale,
+    updated_at: new Date().toISOString(),
   };
-  const row = { ...(input.id ? { id: input.id } : {}), name: input.name, audience: input.audience, offer: input.offer, channel: input.channel, status: input.status.toLowerCase(), ai_rationale: input.aiRationale, ...details, updated_at: new Date().toISOString() };
+  if (input.headline !== undefined) {
+    Object.assign(row, {
+      headline: input.headline.trim(),
+      subline: (input.subline || "").trim(),
+      emoji: input.emoji || "🎉",
+      cta_label: (input.ctaLabel || "Shop now").trim() || "Shop now",
+      target_type: input.targetType || "none",
+      target_value: input.targetType && input.targetType !== "none" ? input.targetValue || null : null,
+      segment: input.segment || "everyone",
+      starts_at: input.startsAt || null,
+      ends_at: input.endsAt || null,
+      priority: Math.round(input.priority ?? 0),
+    });
+  }
   const result = await supabase.from("marketing_campaigns").upsert(row).select("id").single();
   if (result.error) throw new Error(/active_needs_headline/.test(result.error.message) ? "Write the headline customers will see before going live" : /window_check/.test(result.error.message) ? "The end must be after the start" : result.error.message);
   return result.data.id as string;
@@ -289,6 +369,9 @@ export async function saveLiveVendorProduct(input: {
   // has not been applied yet; the release notes still require the migration.
   if (result.error && /nutrition_status|nutrition_confidence|nutrition_note/i.test(result.error.message || "")) {
     const { nutrition_status: _status, nutrition_confidence: _confidence, nutrition_note: _note, ...legacyPayload } = payload;
+    void _status;
+    void _confidence;
+    void _note;
     result = await supabase.from("vendor_menu_items").insert(legacyPayload).select("id").single();
   }
   if (result.error) throw result.error;
@@ -308,11 +391,15 @@ export async function setLiveProductActive(productId: string, active: boolean) {
 
 export async function updateLiveVendorControls(vendorId: string, patch: {
   store_open_today?: boolean; operational_status?: string; delivery_enabled?: boolean;
-  pickup_enabled?: boolean; marketplace_visible?: boolean;
+  pickup_enabled?: boolean; marketplace_visible?: boolean; service_radius_km?: number;
 }) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
-  const result = await supabase.from("vendors").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", vendorId);
+  const result = await supabase.from("vendors").update({
+    ...patch,
+    ...(patch.service_radius_km !== undefined ? { radius_updated_at: new Date().toISOString() } : {}),
+    updated_at: new Date().toISOString(),
+  }).eq("id", vendorId);
   if (result.error) throw result.error;
 }
 
@@ -340,6 +427,37 @@ export type LiveNotificationRow = {
   id: string; kind: string; title: string; body: string; entity_type: string | null;
   entity_id: string | null; read_at: string | null; created_at: string;
 };
+
+export function subscribeLiveNotifications(
+  userId: string,
+  onNotification: (notification: LiveNotificationRow) => void,
+) {
+  const supabase = getSupabaseBrowserClient();
+
+  if (!supabase || !userId) {
+    return () => {};
+  }
+
+  const channel = supabase
+    .channel(`notifications-${userId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "notifications",
+        filter: `recipient_id=eq.${userId}`,
+      },
+      (payload) => {
+        onNotification(payload.new as LiveNotificationRow);
+      },
+    )
+    .subscribe();
+
+  return () => {
+    void supabase.removeChannel(channel);
+  };
+}
 
 export async function loadLiveNotifications() {
   const supabase = getSupabaseBrowserClient();
@@ -501,7 +619,7 @@ export async function syncLiveCart(input: { items: Array<{ productId: string; qu
   return commerceRequest({ action: "sync_cart", items: input.items, createdBy: input.createdBy || "customer" });
 }
 
-export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string }) {
+export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string; deliveryAddress?: string }) {
   return commerceRequest({ action: "checkout_cart", ...(input || {}) });
 }
 

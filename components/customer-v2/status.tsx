@@ -1,9 +1,10 @@
 "use client";
-// Customer statuses: the rail at the top of Stories, the full-screen viewer (watch once), and the composer.
+// Customer statuses: the rail at the top of Stories, the full-screen viewer, and the composer.
 // A status is a photo or a video of up to 30 seconds. It disappears after 24 hours, and each person can
 // watch it once. Nothing here is a permanent gallery.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Image from "next/image";
 import { Eye, Heart, MapPin, Plus, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -15,7 +16,7 @@ import { Avatar } from "./kit";
 
 type Group = { authorId: string; source: "following" | "nearby"; items: Status[] };
 
-const ringStyle = (source: "following" | "nearby") => (source === "following" ? "ring-[3px] ring-[#e0194f] ring-offset-2" : "ring-[3px] ring-stone-300 ring-offset-2");
+const ringStyle = () => "bg-gradient-to-tr from-amber-400 via-pink-500 to-purple-600 p-[3px]";
 
 export function StatusRail({ mine, groups, onAdd, onOpenMine, onOpenGroup, name, hasPin }: {
   mine: MyStatus[]; groups: Group[]; onAdd: () => void; onOpenMine: () => void; onOpenGroup: (index: number) => void; name: string; hasPin: boolean;
@@ -32,7 +33,22 @@ export function StatusRail({ mine, groups, onAdd, onOpenMine, onOpenGroup, name,
         {newest && <span className="-mt-1 text-[9px] font-bold text-stone-400">{statusTimeLeft(newest.expiresAt)}</span>}
       </div>
       {groups.map((g, i) => <button key={g.authorId} type="button" onClick={() => onOpenGroup(i)} aria-label={`${g.items[0].handle}'s status, ${g.items.length} to watch`} data-testid="status-ring" data-source={g.source} className="flex w-[68px] shrink-0 flex-col items-center gap-1.5">
-        <span className="relative"><span className={`block rounded-full ${ringStyle(g.source)}`}><Avatar name={g.items[0].handle} size={62} /></span>{g.items.length > 1 && <span className="absolute -right-1 -top-1 grid min-w-5 place-items-center rounded-full bg-[#e0194f] px-1 text-[10px] font-black text-white">{g.items.length}</span>}</span>
+        <span className="relative inline-block">
+          <span
+            className={`block rounded-full ${
+              g.items.every((item) => item.viewed)
+                ? "bg-stone-300 p-[3px]"
+                : ringStyle()
+            }`}
+          >
+            <Avatar name={g.items[0].handle} size={62} />
+          </span>
+          {g.items.length > 1 && (
+            <span className="absolute right-0 top-0 z-10 grid size-5 translate-x-1/4 -translate-y-1/4 place-items-center rounded-full bg-[#e0194f] text-[10px] font-black text-white shadow-sm">
+              {g.items.length}
+            </span>
+          )}
+        </span>
         <span className="w-full truncate text-center text-[11px] font-bold">{g.items[0].handle}</span>
         {g.source === "nearby" && <span className="-mt-1 inline-flex items-center gap-0.5 text-[9px] font-bold text-stone-400"><MapPin className="size-2.5" />{g.items[0].distanceKm != null ? formatPeopleDistance(g.items[0].distanceKm) : "nearby"}</span>}
       </button>)}
@@ -42,7 +58,7 @@ export function StatusRail({ mine, groups, onAdd, onOpenMine, onOpenGroup, name,
 }
 
 /** Full-screen viewer for one person's statuses, or your own. Watching counts as seen: each status can be
- * watched once. */
+ * can be watched again until it expires. */
 export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, loadViewers, onOpenVendor }: {
   items: (Status | MyStatus)[]; own: boolean; onClose: () => void; onViewed: (id: string) => void; onLike: (id: string, on: boolean) => Promise<void>; onDelete?: (id: string) => Promise<void>;
   loadViewers?: (id: string) => Promise<StatusViewer[]>; onOpenVendor?: (vendorId: string) => void;
@@ -55,19 +71,24 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
   const video = useRef<HTMLVideoElement>(null);
   const count = items.length;
   const current = items[index];
-  const indexRef = useRef(0); indexRef.current = index;
-  const advance = useCallback(() => { if (indexRef.current + 1 < count) setIndex(indexRef.current + 1); else onClose(); }, [count, onClose]);
+  const currentId = current?.id;
+  const moveTo = useCallback((next: number) => {
+    setProgress(0);
+    setSeenBy(null);
+    setIndex(next);
+  }, []);
+  const advance = useCallback(() => { if (index + 1 < count) moveTo(index + 1); else onClose(); }, [count, index, moveTo, onClose]);
 
   useEffect(() => {
     const root = document.documentElement, prev = document.body.style.overflow, prevRoot = root.style.overflow, prevGutter = root.style.scrollbarGutter;
     document.body.style.overflow = "hidden"; root.style.overflow = "hidden"; root.style.scrollbarGutter = "auto";
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); if (e.key === "ArrowRight") advance(); if (e.key === "ArrowLeft") setIndex((i) => Math.max(0, i - 1)); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); if (e.key === "ArrowRight") advance(); if (e.key === "ArrowLeft") moveTo(Math.max(0, index - 1)); };
     window.addEventListener("keydown", onKey);
     return () => { document.body.style.overflow = prev; root.style.overflow = prevRoot; root.style.scrollbarGutter = prevGutter; window.removeEventListener("keydown", onKey); };
-  }, [advance, onClose]);
+  }, [advance, index, moveTo, onClose]);
 
   // showing a status counts as watching it (not for your own)
-  useEffect(() => { setProgress(0); setSeenBy(null); if (current && !own) onViewed(current.id); }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (currentId && !own) onViewed(currentId); }, [currentId, onViewed, own]);
 
   // photos advance after six seconds; videos advance when they finish
   useEffect(() => {
@@ -87,7 +108,7 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
     <div className="relative h-full w-full max-w-[460px] overflow-hidden bg-[#1b1712]">
       {current.kind === "video" && current.mediaUrl
         ? <video key={current.id} ref={video} src={current.mediaUrl} poster={current.thumbUrl} autoPlay muted={muted} playsInline onEnded={advance} onTimeUpdate={(e) => setProgress(e.currentTarget.duration ? e.currentTarget.currentTime / e.currentTarget.duration : 0)} className="h-full w-full object-cover" />
-        : current.mediaUrl ? <img key={current.id} src={current.mediaUrl} alt="" className="h-full w-full object-cover" />
+        : current.mediaUrl ? <Image key={current.id} src={current.mediaUrl} alt="" fill unoptimized sizes="460px" className="object-cover" />
         : <div className="grid h-full w-full place-items-center bg-gradient-to-br from-[#3a1220] via-[#5a1a31] to-[#1a0a10]"><span className="text-[120px]" aria-hidden>{current.emoji || "🍽️"}</span>{current.sample && <span className="absolute left-1/2 top-28 -translate-x-1/2 rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-stone-800">Sample status</span>}</div>}
       <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/65 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))]">
         <div className="flex gap-1" aria-hidden>{items.map((s, i) => <span key={s.id} className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/35"><span className="block h-full bg-white" style={{ width: i < index ? "100%" : i === index ? `${progress * 100}%` : "0%" }} /></span>)}</div>
@@ -95,7 +116,7 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
           {current.kind === "video" && current.mediaUrl && <button type="button" aria-label={muted ? "Turn sound on" : "Turn sound off"} onClick={() => setMuted((m) => !m)} className="ml-auto grid size-9 place-items-center rounded-full bg-black/40">{muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}</button>}
           <button type="button" aria-label="Close status" onClick={onClose} className={`${current.kind === "video" && current.mediaUrl ? "" : "ml-auto"} grid size-9 place-items-center rounded-full bg-black/40`}><X className="size-5" /></button></div>
       </div>
-      <button type="button" aria-label="Previous status" className="absolute bottom-24 left-0 top-24 w-1/3" onClick={() => setIndex((i) => Math.max(0, i - 1))} />
+      <button type="button" aria-label="Previous status" className="absolute bottom-24 left-0 top-24 w-1/3" onClick={() => moveTo(Math.max(0, index - 1))} />
       <button type="button" aria-label="Next status" className="absolute bottom-24 right-0 top-24 w-1/3" onClick={advance} />
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] text-white">
         {current.caption && <p className="mb-3 text-sm font-bold leading-6" data-testid="status-caption">{current.caption}</p>}
@@ -105,7 +126,7 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
             <span className="inline-flex items-center gap-1.5" data-testid="status-own-likes"><Heart className="size-4" />{(current as MyStatus).likeCount}</span>
             {onDelete && <button type="button" aria-label="Delete this status" onClick={async () => { try { await onDelete(current.id); toast.success("Status deleted"); if (count <= 1) onClose(); else setIndex((i) => Math.max(0, i - 1)); } catch (e) { toast.error(e instanceof Error ? e.message : "Could not delete"); } }} className="ml-auto grid size-10 place-items-center rounded-full bg-white/20 backdrop-blur"><Trash2 className="size-4" /></button>}
           </div>
-          : <div className="flex items-center justify-between"><span className="text-[11px] font-bold text-white/70">Seen once, then gone for you</span>
+          : <div className="flex items-center justify-between"><span className="text-[11px] font-bold text-white/70">You can watch this status again until it expires</span>
               <button type="button" aria-label={liked ? "Unlike" : "Like"} onClick={() => void toggleLike()} className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-2 text-sm font-black backdrop-blur"><Heart className={`size-5 ${liked ? "fill-[#ff4d7a] text-[#ff4d7a]" : ""}`} /><span data-testid="status-likes">{likeCount}</span></button></div>}
         {seenBy && <div className="mt-3 max-h-40 overflow-y-auto rounded-2xl bg-black/55 p-3 text-xs backdrop-blur" data-testid="status-seen-by">{seenBy.length ? seenBy.map((v) => <div key={v.handle} className="flex justify-between py-1"><span className="font-black">@{v.handle}</span><span className="text-white/70">{v.liked ? "♥ " : ""}seen</span></div>) : <span className="text-white/70">Nobody has watched this yet.</span>}</div>}
       </div>
@@ -123,7 +144,6 @@ export function StatusComposer({ open, onClose, onPost, vendors }: {
   const [caption, setCaption] = useState(""); const [vendorId, setVendorId] = useState("");
   const [error, setError] = useState(""); const [busy, setBusy] = useState(false); const [checking, setChecking] = useState(false);
   const isVideo = Boolean(file?.type.startsWith("video/"));
-  useEffect(() => { if (open) { setFile(null); setInfo(null); setPreview(""); setCaption(""); setVendorId(""); setError(""); setBusy(false); } }, [open]);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
 
   async function choose(next: File | undefined) {
@@ -150,7 +170,7 @@ export function StatusComposer({ open, onClose, onPost, vendors }: {
       <label htmlFor="status-video" className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border border-dashed border-stone-300 p-5 text-sm font-black transition hover:border-[#e0194f]"><span className="text-3xl" aria-hidden>🎬</span>Video, up to 30 s</label>
       {checking && <p className="col-span-2 text-sm font-bold text-stone-500" role="status">Checking your file…</p>}
     </div>
-    : <div className="overflow-hidden rounded-2xl bg-black">{isVideo ? <video src={preview} controls playsInline muted className="max-h-72 w-full object-contain" aria-label="Preview of your video" /> : <img src={preview} alt="Preview of your photo" className="max-h-72 w-full object-contain" />}</div>}
+    : <div className="overflow-hidden rounded-2xl bg-black">{isVideo ? <video src={preview} controls playsInline muted className="max-h-72 w-full object-contain" aria-label="Preview of your video" /> : <Image src={preview} alt="Preview of your photo" width={640} height={480} unoptimized className="max-h-72 w-full object-contain" />}</div>}
     {file && <>
       <label className="block text-xs font-black uppercase tracking-[.1em] text-stone-500">Caption (optional)<textarea value={caption} onChange={(e) => setCaption(e.target.value)} maxLength={200} rows={2} aria-label="Status caption" placeholder="What are you eating?" className="mt-1.5 w-full rounded-xl border border-stone-200 p-3 text-sm font-medium normal-case tracking-normal text-stone-800 outline-none focus:border-[#e0194f]" /></label>
       <label className="block text-xs font-black uppercase tracking-[.1em] text-stone-500">Tag a vendor (optional)<select value={vendorId} onChange={(e) => setVendorId(e.target.value)} aria-label="Tag a vendor" className="mt-1.5 h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm font-bold normal-case tracking-normal text-stone-800"><option value="">No vendor</option>{vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</select></label>

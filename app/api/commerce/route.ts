@@ -16,6 +16,8 @@ function clients(request: Request) {
   };
 }
 
+type AdminClient = NonNullable<ReturnType<typeof clients>>["admin"];
+
 async function identity(request: Request) {
   const c = clients(request);
   if (!c) return null;
@@ -67,7 +69,7 @@ function scheduleDates(schedule: { start_date: string; end_date?: string | null;
   return out.length ? out : [start];
 }
 
-async function serviceableProductsForCustomer(admin: ReturnType<typeof createClient>, customerId: string) {
+async function serviceableProductsForCustomer(admin: AdminClient, customerId: string) {
   const { data: preference } = await admin.from("customer_preferences").select("latitude,longitude").eq("customer_id", customerId).maybeSingle();
   const latitude = Number(preference?.latitude);
   const longitude = Number(preference?.longitude);
@@ -75,10 +77,15 @@ async function serviceableProductsForCustomer(admin: ReturnType<typeof createCli
   const marketplace = await admin.rpc("marketplace_menu_nearby", { customer_lat: latitude, customer_lng: longitude });
   if (marketplace.error) throw marketplace.error;
   const rows = (marketplace.data || []) as Array<Record<string, unknown>>;
-  return new Map(rows.map((row) => [String(row.item_id || ""), row]).filter(([id]) => Boolean(id)));
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const id = String(row.item_id || "");
+    if (id) byId.set(id, row);
+  }
+  return byId;
 }
 
-async function draftCartForCustomer(admin: ReturnType<typeof createClient>, customerId: string) {
+async function draftCartForCustomer(admin: AdminClient, customerId: string) {
   const cart = await admin.from("commerce_carts").select("id,status,created_by,created_at,updated_at").eq("customer_id", customerId).eq("status", "draft").order("updated_at", { ascending: false }).limit(1).maybeSingle();
   if (cart.error) throw cart.error;
   if (!cart.data) return { cart: null, items: [] as Array<Record<string, unknown>> };
@@ -91,7 +98,7 @@ async function commerceSnapshot(ctx: Awaited<ReturnType<typeof identity>>) {
   if (!ctx) throw new Error("Unauthorised");
   const { admin, profile } = ctx;
   const role = profile.role;
-  const orderQuery = admin.from("orders").select("id,order_number,schedule_id,customer_id,vendor_id,vendor_base_total,markup_total,tax_amount,delivery_fee,customer_total,fulfilment_mode,scheduled_date,scheduled_slot,status,tracking_latitude,tracking_longitude,cancellation_fee,created_at,order_items(id,product_name,quantity,unit,vendor_base_price,customer_price),payments(id,amount,status,provider,provider_reference,created_at)").order("scheduled_date", { ascending: true }).limit(500);
+  const orderQuery = admin.from("orders").select("id,order_number,schedule_id,customer_id,vendor_id,vendor_base_total,markup_total,tax_amount,delivery_fee,customer_total,delivery_address,fulfilment_mode,scheduled_date,scheduled_slot,status,tracking_latitude,tracking_longitude,cancellation_fee,created_at,order_items(id,product_name,quantity,unit,vendor_base_price,customer_price),payments(id,amount,status,provider,provider_reference,created_at)").order("scheduled_date", { ascending: true }).limit(500);
   if (role === "customer") orderQuery.eq("customer_id", profile.id);
   if (role === "vendor") {
     if (!profile.vendor_id) return { orders: [], schedules: [], staff: [], assignments: [] };
@@ -165,7 +172,7 @@ export async function POST(request: Request) {
         if (!Number.isFinite(quantity) || quantity <= 0 || stock <= 0) continue;
         normalized.push({ productId, vendorId: String(row.vendor_id), quantity: Math.min(quantity, stock), unit: String(row.unit || "pack"), unitPrice: Math.max(0, Number(row.customer_price || 0)) });
       }
-      let draft = await draftCartForCustomer(admin, profile.id);
+      const draft = await draftCartForCustomer(admin, profile.id);
       let cartId = draft.cart?.id ? String(draft.cart.id) : "";
       if (!cartId) {
         const created = await admin.from("commerce_carts").insert({ customer_id: profile.id, status: "draft", created_by: String(body.createdBy || "customer") === "she_agent" ? "she_agent" : "customer" }).select("id").single();
@@ -184,6 +191,8 @@ export async function POST(request: Request) {
 
     if (action === "checkout_cart") {
       if (profile.role !== "customer") return NextResponse.json({ error: "Customer access required." }, { status: 403 });
+      const deliveryAddress = String(body.deliveryAddress || "").trim();
+      if (!deliveryAddress) return NextResponse.json({ error: "Choose or enter a delivery address before checkout." }, { status: 400 });
       const draft = await draftCartForCustomer(admin, profile.id);
       const cartId = draft.cart?.id ? String(draft.cart.id) : "";
       if (!cartId || !draft.items.length) return NextResponse.json({ error: "Your cart is empty." }, { status: 409 });
@@ -216,7 +225,7 @@ export async function POST(request: Request) {
           vendorBaseTotal += base * quantity; customerTotal += price * quantity;
           return { product_name: String(product.name || "Product"), quantity, unit: String(item.unit || product.unit || "pack"), vendor_base_price: base, markup_percent: base > 0 ? Math.max(0, ((price / base) - 1) * 100) : 0, customer_price: price };
         });
-        const inserted = await admin.from("orders").insert({ order_number: orderNumber(), customer_id: profile.id, vendor_id: vendorId, vendor_base_total: vendorBaseTotal, markup_total: Math.max(0, customerTotal - vendorBaseTotal), tax_amount: 0, delivery_fee: 0, customer_total: customerTotal, fulfilment_mode: fulfilmentMode, scheduled_date: scheduledDate, scheduled_slot: scheduledSlot, status: "awarded" }).select("id,order_number").single();
+        const inserted = await admin.from("orders").insert({ order_number: orderNumber(), customer_id: profile.id, vendor_id: vendorId, vendor_base_total: vendorBaseTotal, markup_total: Math.max(0, customerTotal - vendorBaseTotal), tax_amount: 0, delivery_fee: 0, customer_total: customerTotal, delivery_address: deliveryAddress, fulfilment_mode: fulfilmentMode, scheduled_date: scheduledDate, scheduled_slot: scheduledSlot, status: "awarded" }).select("id,order_number").single();
         if (inserted.error) throw inserted.error;
         orderIds.push(inserted.data.id);
         const itemInsert = await admin.from("order_items").insert(orderItems.map((item) => ({ order_id: inserted.data.id, ...item })));
@@ -332,8 +341,32 @@ export async function POST(request: Request) {
     if (action === "update_order_status") {
       if (!(["vendor", "operations", "admin"] as Role[]).includes(profile.role)) return NextResponse.json({ error: "Not authorised." }, { status: 403 });
       const orderId = String(body.orderId || "");
-      const statusMap: Record<string,string> = { Scheduled: "awarded", Confirmed: "confirmed", Preparing: "preparing", Ready: "ready", "Out for delivery": "out_for_delivery", "Ready for pickup": "ready_for_pickup", Completed: "completed", Cancelled: "cancelled", "Cancellation requested": "cancellation_requested" };
-      const nextStatus = statusMap[String(body.status || "")] || String(body.status || "").toLowerCase();
+      // Cancellation is disabled for new order-status updates. Keep historical
+      // cancellation records untouched, but reject cancellation statuses (and
+      // any unrecognized status) at the API boundary.
+      const statusMap: Record<string, string> = {
+        Scheduled: "awarded",
+        Confirmed: "confirmed",
+        Preparing: "preparing",
+        Ready: "ready",
+        "Out for delivery": "out_for_delivery",
+        "Ready for pickup": "ready_for_pickup",
+        Completed: "completed",
+      };
+      const requestedStatus = String(body.status || "").trim();
+      const nextStatus = statusMap[requestedStatus] || requestedStatus.toLowerCase().replace(/[ -]+/g, "_");
+      const allowedStatuses = new Set([
+        "awarded",
+        "confirmed",
+        "preparing",
+        "ready",
+        "out_for_delivery",
+        "ready_for_pickup",
+        "completed",
+      ]);
+      if (!allowedStatuses.has(nextStatus)) {
+        return NextResponse.json({ error: "Cancellation and unsupported order statuses are disabled." }, { status: 400 });
+      }
       const { data: order } = await admin.from("orders").select("id,vendor_id,customer_id,order_number").eq("id", orderId).maybeSingle();
       if (!order) return NextResponse.json({ error: "Order not found." }, { status: 404 });
       if (profile.role === "vendor" && order.vendor_id !== profile.vendor_id) return NextResponse.json({ error: "This order belongs to another store." }, { status: 403 });

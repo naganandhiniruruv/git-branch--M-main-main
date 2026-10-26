@@ -42,6 +42,11 @@ test("a follower can watch; a stranger only if the author is on the map and with
   assert.equal(statusVisibleTo(aud({ viewerPin: null }), NOW), false);                  // no pin, no nearby
 });
 
+test("private account statuses are visible only to approved followers", () => {
+  assert.equal(statusVisibleTo(aud({ authorPrivateAccount: true }), NOW), false);
+  assert.equal(statusVisibleTo(aud({ authorPrivateAccount: true, viewerFollowsAuthor: true }), NOW), true);
+});
+
 test("view-once, expiry and your own status", () => {
   assert.equal(statusVisibleTo(aud({ alreadyViewed: true }), NOW), false);
   assert.equal(statusVisibleTo(aud({ viewerFollowsAuthor: true, alreadyViewed: true }), NOW), false);

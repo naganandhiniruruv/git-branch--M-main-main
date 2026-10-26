@@ -2,6 +2,7 @@
 // Vendor portal: create and manage Food Shorts (video up to 30 seconds). The vendor picks how
 // far the short reaches; customers inside that distance see it (enforced by the database).
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { Clapperboard, Eye, EyeOff, Heart, MapPin, Trash2, Upload, Video } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,7 @@ export function VendorShortsManager({ vendor, products, shorts }: { vendor: Mana
   const [file, setFile] = useState<File | null>(null);
   const [info, setInfo] = useState<VideoInspection | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
-  const [title, setTitle] = useState(""); const [caption, setCaption] = useState(""); const [productId, setProductId] = useState("");
+  const [title, setTitle] = useState(""); const [caption, setCaption] = useState(""); const [productId, setProductId] = useState(""); const [shopLink, setShopLink] = useState("");
   const [reachKm, setReachKm] = useState<number>(defaultReachKm(vendor.radiusKm));
   const [error, setError] = useState(""); const [busy, setBusy] = useState(false); const [checking, setChecking] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(""); const [playing, setPlaying] = useState("");
@@ -36,12 +37,12 @@ export function VendorShortsManager({ vendor, products, shorts }: { vendor: Mana
     } catch (e) { setError(e instanceof Error ? e.message : "That video could not be used"); }
     finally { setChecking(false); if (fileInput.current) fileInput.current.value = ""; }
   }
-  function reset() { setFile(null); setInfo(null); setPreviewUrl(""); setTitle(""); setCaption(""); setProductId(""); setError(""); }
+  function reset() { setFile(null); setInfo(null); setPreviewUrl(""); setTitle(""); setCaption(""); setProductId(""); setShopLink(""); setError(""); }
   async function publish() {
     if (!file || !info) return;
     setBusy(true); setError("");
     try {
-      await shorts.publish({ title, caption, file, thumbDataUrl: info.thumbDataUrl, durationS: info.durationS, reachKm, productId: productId || null });
+      await shorts.publish({ title, caption, file, thumbDataUrl: info.thumbDataUrl, durationS: info.durationS, reachKm, productId: productId || null, shopLink });
       toast.success(`Food Short published. Customers within ${reachKm} km can watch it`);
       reset();
     } catch (e) { setError(e instanceof Error ? e.message : "The short could not be published"); }
@@ -71,6 +72,7 @@ export function VendorShortsManager({ vendor, products, shorts }: { vendor: Mana
         <div className="space-y-4">
           <label className="block"><span className="mb-1.5 block text-xs font-black uppercase tracking-[.14em] text-stone-500">Title</span><input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} placeholder="Fresh croissants out of the oven" aria-label="Short title" className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#5f8f2d]" /></label>
           <label className="block"><span className="mb-1.5 block text-xs font-black uppercase tracking-[.14em] text-stone-500">Caption (optional)</span><textarea value={caption} onChange={(e) => setCaption(e.target.value)} maxLength={300} rows={2} aria-label="Short caption" className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#5f8f2d]" /></label>
+          <label className="block"><span className="mb-1.5 block text-xs font-black uppercase tracking-[.14em] text-stone-500">Shop link (optional)</span><input type="url" value={shopLink} onChange={(e) => setShopLink(e.target.value)} maxLength={2048} placeholder="https://your-shop-or-product-link" aria-label="Shop link" className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#5f8f2d]" /><span className="mt-1 block text-xs text-stone-500">Customers can open this link while watching your short.</span></label>
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block"><span className="mb-1.5 block text-xs font-black uppercase tracking-[.14em] text-stone-500">Reach</span>
               <select value={reachKm} onChange={(e) => setReachKm(Number(e.target.value))} aria-label="Reach distance" className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#5f8f2d]">{REACH_OPTIONS_KM.map((km) => <option key={km} value={km}>{km} km from my shop{km === defaultReachKm(vendor.radiusKm) ? " (my delivery radius)" : ""}</option>)}</select></label>
@@ -89,7 +91,7 @@ export function VendorShortsManager({ vendor, products, shorts }: { vendor: Mana
       <h2 className="font-black">Your Food Shorts ({shorts.mine.length})</h2>
       {shorts.mine.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="my-shorts">{shorts.mine.map((s) => <article key={s.id} data-testid="my-short" className="surface-card overflow-hidden rounded-[26px]">
         <div className="relative aspect-[9/16] max-h-72 w-full bg-stone-900">
-          {playing === s.id && s.videoUrl ? <video src={s.videoUrl} controls autoPlay playsInline className="h-full w-full object-contain" /> : <>{s.thumbUrl ? <img src={s.thumbUrl} alt="" className="h-full w-full object-cover" /> : <div className="grid h-full place-items-center text-stone-400"><Video className="size-10" /></div>}<button type="button" onClick={() => setPlaying(s.id)} disabled={!s.videoUrl} aria-label={`Play ${s.title}`} className="absolute inset-0 grid place-items-center bg-black/10 text-white disabled:hidden"><span className="grid size-12 place-items-center rounded-full bg-black/55">▶</span></button></>}
+          {playing === s.id && s.videoUrl ? <video src={s.videoUrl} controls autoPlay playsInline className="h-full w-full object-contain" /> : <>{s.thumbUrl ? <Image src={s.thumbUrl} alt="" fill unoptimized sizes="(max-width: 768px) 100vw, 50vw" className="object-cover" /> : <div className="grid h-full place-items-center text-stone-400"><Video className="size-10" /></div>}<button type="button" onClick={() => setPlaying(s.id)} disabled={!s.videoUrl} aria-label={`Play ${s.title}`} className="absolute inset-0 grid place-items-center bg-black/10 text-white disabled:hidden"><span className="grid size-12 place-items-center rounded-full bg-black/55">▶</span></button></>}
           <span className="absolute right-2 top-2 rounded-full bg-black/60 px-2 py-1 text-[10px] font-black text-white">{formatDuration(s.durationS)}</span>
         </div>
         <div className="space-y-3 p-4">

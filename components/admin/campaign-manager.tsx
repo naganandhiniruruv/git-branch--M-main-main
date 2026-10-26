@@ -45,7 +45,8 @@ export function CampaignManager({ campaigns, categories, vendors, products, crea
     if (!createOpen) return;
     const base = blank();
     if (prefill) Object.assign(base, { name: prefill.name || "", headline: prefill.headline || prefill.name || "", subline: prefill.subline || prefill.offer || "", offer: prefill.offer || "", channel: prefill.channel || "In-app", aiRationale: prefill.aiRationale || "" });
-    setForm(base); onCreateOpenChange(false); onPrefillUsed();
+    queueMicrotask(() => setForm(base));
+    onCreateOpenChange(false); onPrefillUsed();
   }, [createOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const liveNow = campaigns.filter((c) => campaignPhase(c) === "live").length;

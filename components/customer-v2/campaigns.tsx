@@ -20,12 +20,13 @@ export function CampaignBanner({ campaigns, fallback, onCta, onView, intervalMs 
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   const count = campaigns.length;
-  const safe = count ? Math.min(index, count - 1) : 0;
+  const safe = count ? Math.max(0, Math.min(index, count - 1)) : 0;
   const current = campaigns[safe];
-  const viewed = useRef(onView); viewed.current = onView;
+  const currentId = current?.id;
+  const viewed = useRef(onView);
 
-  useEffect(() => { if (index > count - 1) setIndex(0); }, [count, index]);
-  useEffect(() => { if (current) viewed.current(current.id); }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { viewed.current = onView; }, [onView]);
+  useEffect(() => { if (currentId) onView(currentId); }, [currentId, onView]);
   useEffect(() => {
     if (count < 2 || paused) return;
     const reduce = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;

@@ -1,6 +1,6 @@
 import type { Role } from "./sheplates-data";
 
-export type DemoSession = { email: string; name: string; role: Role; userId?: string; vendorId?: string; isNewVendor?: boolean; toursCompleted?: string[] };
+export type DemoSession = { email: string; name: string; role: Role; userId?: string; vendorId?: string; isNewVendor?: boolean; toursCompleted?: string[]; privateAccount?: boolean };
 export type VerificationStatus = "Draft" | "Submitted" | "Under review" | "Changes required" | "Verified" | "Rejected" | "Expired";
 export type OrderStatus = "Awarded" | "Confirmed" | "Preparing" | "Ready" | "Out for delivery" | "Ready for pickup" | "Completed" | "Cancellation requested" | "Cancelled";
 export type PaymentStatus = "Paid" | "Reversal pending" | "Reversal initiated" | "Refunded";

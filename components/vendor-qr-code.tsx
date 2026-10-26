@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
+import Image from "next/image";
 import { QrCode, Download } from "lucide-react";
 
 /** Scanning this opens ShePlates directly at this vendor's shop (see the
@@ -15,7 +16,7 @@ export function VendorQrCode({ vendorId, vendorName }: { vendorId: string; vendo
 
   useEffect(() => {
     const url = `${window.location.origin}${window.location.pathname}?vendor=${vendorId}`;
-    setShopUrl(url);
+    queueMicrotask(() => setShopUrl(url));
     QRCode.toDataURL(url, { width: 320, margin: 1, color: { dark: "#153d2a", light: "#ffffff" } })
       .then(setDataUrl)
       .catch(() => setDataUrl(""));
@@ -27,7 +28,7 @@ export function VendorQrCode({ vendorId, vendorName }: { vendorId: string; vendo
       <p className="mt-1.5 text-sm leading-5 text-stone-500">Print this at your counter or packaging. Scanning it opens ShePlates straight at your shop, and a signed-in customer can Add to Cart or Schedule right away.</p>
       <div className="mt-4 flex flex-col items-center gap-3 sm:flex-row sm:items-start">
         <div className="grid size-40 shrink-0 place-items-center overflow-hidden rounded-2xl border border-stone-200/70 bg-white p-2">
-          {dataUrl ? <img src={dataUrl} alt={`QR code for ${vendorName}`} className="h-full w-full object-contain" /> : <span className="text-xs text-stone-400">Generating…</span>}
+          {dataUrl ? <Image src={dataUrl} alt={`QR code for ${vendorName}`} width={144} height={144} unoptimized className="h-full w-full object-contain" /> : <span className="text-xs text-stone-400">Generating…</span>}
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="truncate rounded-xl bg-stone-50 px-3 py-2 text-xs text-stone-500">{shopUrl || "…"}</div>

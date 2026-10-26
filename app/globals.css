@@ -1404,6 +1404,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .sp-agent-orb {
   isolation: isolate;
   overflow: visible;
+  animation: sp-agent-logo-bounce 2.4s ease-in-out infinite;
   background:
     radial-gradient(circle at 30% 22%, rgba(255,255,255,.95), rgba(255,255,255,.18) 21%, transparent 22%),
     linear-gradient(145deg, rgba(35,122,69,.96), rgba(30,107,60,.90) 45%, rgba(24,134,75,.94)) !important;
@@ -1415,6 +1416,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
     inset 0 -10px 26px rgba(22,24,20,.12) !important;
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
+}
+@keyframes sp-agent-logo-bounce {
+  0%, 100% { transform: translateY(0) scale(1); }
+  18% { transform: translateY(-5px) scale(1.04, .96); }
+  36% { transform: translateY(0) scale(.98, 1.03); }
+  52% { transform: translateY(-2px) scale(1.01, .99); }
+  66% { transform: translateY(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sp-agent-orb { animation: none; }
 }
 .sp-agent-orb::after {
   content: "";
@@ -1436,10 +1447,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   box-shadow: 0 20px 60px rgba(23,26,20,.14), inset 0 1px 0 rgba(255,255,255,.92) !important;
   backdrop-filter: blur(26px) saturate(180%) !important;
   -webkit-backdrop-filter: blur(26px) saturate(180%) !important;
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease, transform .2s ease;
 }
 .sp-agent-launcher:hover {
-  background: rgba(255,255,255,.76) !important;
-  box-shadow: 0 26px 76px rgba(23,26,20,.18), inset 0 1px 0 rgba(255,255,255,.94) !important;
+  border-color: rgba(224,25,79,.42) !important;
+  background: linear-gradient(145deg, rgba(255,235,241,.98), rgba(250,210,223,.96)) !important;
+  box-shadow: 0 18px 52px rgba(224,25,79,.22), inset 0 1px 0 rgba(255,255,255,.96) !important;
+  transform: translateY(-3px) scale(1.04);
+}
+.sp-staff-agent-launcher:hover {
+  border-color: rgba(35,122,69,.42) !important;
+  background: linear-gradient(145deg, rgba(225,247,229,.96), rgba(204,237,213,.94)) !important;
+  box-shadow: 0 18px 52px rgba(35,122,69,.24), inset 0 1px 0 rgba(255,255,255,.96) !important;
+}
+.sp-agent-launcher:focus-visible {
+  outline: 3px solid rgba(224,25,79,.48);
+  outline-offset: 4px;
+}
+.sp-staff-agent-launcher:focus-visible {
+  outline-color: rgba(35,122,69,.48);
 }
 
 /* She Agent itself is a floating glass workspace on web. */

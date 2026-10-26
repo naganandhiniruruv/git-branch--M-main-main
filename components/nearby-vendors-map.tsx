@@ -1,5 +1,5 @@
 "use client";
-/* eslint-disable @typescript-eslint/no-explicit-any */
+ 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Circle, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
@@ -256,7 +256,7 @@ export function NearbyVendorsMap({
             zIndexOffset={vendor.id === selectedId ? 1000 : 0}
           >
             {!onPinClick && <Popup>
-              <div className="min-w-[160px] text-sm">
+              <div className="min-w-40 text-sm">
                 <div className="font-black text-[#171917]">{vendor.name}{vendor.id === closestId && <span className="ml-1.5 rounded-full bg-[#f8e2e8] px-1.5 py-0.5 text-[10px] font-black text-[#c62653]">Closest</span>}</div>
                 <div className="mt-1 text-xs text-stone-500">{vendor.distanceKm.toFixed(1)} km away{vendor.verified ? " · Verified" : ""}</div>
                 {vendor.productCount ? <div className="mt-0.5 text-xs text-stone-500">{vendor.productCount} product{vendor.productCount === 1 ? "" : "s"} in range</div> : null}
@@ -266,7 +266,7 @@ export function NearbyVendorsMap({
           </Marker>
         ))}
       </MapContainer>
-      <div className="absolute left-3 top-3 z-[1000] flex items-center gap-1 rounded-full border border-white/70 bg-white/92 py-1 pl-3 pr-1 text-xs font-black text-[#171917] shadow-sm backdrop-blur">
+      <div className="absolute left-3 top-3 z-1000 flex items-center gap-1 rounded-full border border-white/70 bg-white/92 py-1 pl-3 pr-1 text-xs font-black text-[#171917] shadow-sm backdrop-blur">
         <MapPin className="size-3.5 shrink-0 text-[#c62653]" />
         <span className="whitespace-nowrap" data-testid="map-count">{people ? `${radiusKm} km · ${people.length} ${people.length === 1 ? "person" : "people"} nearby` : `${radiusKm} km · ${vendors.filter((v) => v.distanceKm <= radiusKm).length} vendor${vendors.filter((v) => v.distanceKm <= radiusKm).length === 1 ? "" : "s"} in range`}</span>
         <span className="ml-1 flex shrink-0 items-center gap-0.5">
@@ -274,7 +274,7 @@ export function NearbyVendorsMap({
           <button type="button" aria-label="Increase radius" onClick={() => onRadiusChange(Math.min(30, radiusKm + 1))} className="grid size-6 place-items-center rounded-full bg-stone-100 text-sm font-black leading-none hover:bg-stone-200">+</button>
         </span>
       </div>
-      <div className="pointer-events-none absolute bottom-3 right-3 z-[1000] flex max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-full border border-white/70 bg-white/90 px-3 py-1.5 text-[10px] font-bold text-stone-500 shadow-sm backdrop-blur">
+      <div className="pointer-events-none absolute bottom-3 right-3 z-1000 flex max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-full border border-white/70 bg-white/90 px-3 py-1.5 text-[10px] font-bold text-stone-500 shadow-sm backdrop-blur">
         <ShoppingBag className="hidden size-3 shrink-0 text-[#c62653] sm:block" /><span className="hidden sm:inline">Drag the pink handle, or use +/&minus; on the chip, to change your radius</span><span className="sm:hidden">Tiles &copy; Esri</span><span className="hidden sm:inline">&middot; Tiles &copy; Esri</span>
       </div>
     </div>

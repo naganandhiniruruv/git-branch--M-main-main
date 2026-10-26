@@ -231,7 +231,11 @@ function executeTool(role: Role, context: Record<string, unknown>, name: string,
     }
     if (name === "get_customer_context") return { preferences: context.preferences || null, remembered_preferences: context.memory || [] };
     if (name === "get_current_cart") {
-      const productMap = new Map(products.map((row) => [productId(row), compactProduct(row)]).filter(([id]) => Boolean(id)));
+      const productMap = new Map<string, ReturnType<typeof compactProduct>>();
+      for (const row of products) {
+        const id = productId(row);
+        if (id) productMap.set(id, compactProduct(row));
+      }
       const items = asObjects(context.cartItems).map((row) => ({
         ...row,
         product: productMap.get(text(row.menu_item_id)) || null,
@@ -240,7 +244,11 @@ function executeTool(role: Role, context: Record<string, unknown>, name: string,
       return { items, total: Math.round(items.reduce((sum, item) => sum + number(item.line_total, 0), 0) * 100) / 100 };
     }
     if (name === "build_cart") {
-      const allowed = new Map(products.map((row) => [productId(row), row]).filter(([id]) => Boolean(id)));
+      const allowed = new Map<string, Record<string, unknown>>();
+      for (const row of products) {
+        const id = productId(row);
+        if (id) allowed.set(id, row);
+      }
       const requested = Array.isArray(args.items) ? args.items.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
       const budget = number(args.budget, -1);
       let total = 0;
