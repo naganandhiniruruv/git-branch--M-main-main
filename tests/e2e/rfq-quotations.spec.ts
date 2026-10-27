@@ -50,6 +50,8 @@ test.afterAll(async () => {
   const sb = admin();
   const reqs = rfqId ? [rfqId] : ((await sb.from("customer_requirements").select("id").eq("title", RFQ_TITLE)).data || []).map((r) => r.id);
   if (reqs.length) {
+    const files = (await sb.from("customer_requirement_files").select("storage_path").in("requirement_id", reqs)).data || [];
+    if (files.length) await sb.storage.from("customer-requirements").remove(files.map((file) => file.storage_path));
     const orders = ((await sb.from("orders").select("id").in("requirement_id", reqs)).data || []).map((o) => o.id);
     if (orders.length) { await sb.from("payments").delete().in("order_id", orders); await sb.from("orders").delete().in("id", orders); }
     await sb.from("customer_requirements").delete().in("id", reqs);
@@ -100,9 +102,17 @@ test("1. the customer publishes an RFQ and only the Package 3 vendor whose radiu
   await expect(card).toBeVisible({ timeout: 15_000 });
   await expect(card.getByTestId("rfq-invited")).toHaveText("1");
   await expect(card.getByTestId("rfq-quoted")).toHaveText("0");
+  await card.getByLabel(`Upload documents for ${RFQ_TITLE}`).setInputFiles({
+    name: "product-spec.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Preferred packaging details"),
+  });
+  await expect(card.getByRole("link", { name: "product-spec.txt" })).toBeVisible({ timeout: 15_000 });
   const row = (await admin().from("customer_requirements").select("id,invited_count,status").eq("title", RFQ_TITLE).single()).data!;
   rfqId = row.id;
   expect(row.status).toBe("quoting");
+  const document = (await admin().from("customer_requirement_files").select("file_name,storage_path").eq("requirement_id", rfqId).single()).data!;
+  expect(document.file_name).toBe("product-spec.txt");
   const invited = ((await admin().from("rfq_vendor_invitations").select("vendor_id").eq("requirement_id", rfqId)).data || []).map((x) => x.vendor_id);
   expect(invited).toEqual([accts.premium.vendorId]);
   await page.context().close();

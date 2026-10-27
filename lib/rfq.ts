@@ -4,10 +4,11 @@
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 
 export type RfqItem = { id: string; name: string; quantity: number; unit: string; brand?: string };
+export type CustomerRfqDocument = { id: string; fileName: string; contentType?: string; createdAt: string; url: string };
 export type RfqQuoteSummary = { id: string; vendorId: string; vendorName: string; status: string; coveragePercent: number; total: number; deliveryFee: number; validUntil?: string };
 export type CustomerRfq = {
   id: string; title: string; locality: string; deliveryDate: string; quoteDeadline: string; fulfilment: string; status: string;
-  invited: number; items: RfqItem[]; quotes: RfqQuoteSummary[]; awardedQuoteId?: string | null; order?: { number: string; total: number; status: string };
+  invited: number; items: RfqItem[]; documents: CustomerRfqDocument[]; quotes: RfqQuoteSummary[]; awardedQuoteId?: string | null; order?: { number: string; total: number; status: string };
 };
 export type VendorRfq = {
   id: string; title: string; locality: string; deliveryDate: string; quoteDeadline: string; fulfilment: string; status: string; items: RfqItem[];
@@ -41,23 +42,66 @@ export async function publishRequirement(input: PublishInput): Promise<{ id: str
 
 export async function loadCustomerRfqs(): Promise<CustomerRfq[]> {
   const sb = client();
-  const res = await sb.from("customer_requirements").select("id,title,locality,delivery_date,fulfilment_mode,quote_deadline,status,invited_count,awarded_quote_id,created_at,requirement_items(id,product_name,quantity,unit,preferred_brand)").order("created_at", { ascending: false }).limit(40);
+  const res = await sb.from("customer_requirements").select("id,title,locality,delivery_date,fulfilment_mode,quote_deadline,status,invited_count,awarded_quote_id,created_at,requirement_items(id,product_name,quantity,unit,preferred_brand),customer_requirement_files(id,file_name,storage_path,content_type,created_at)").order("created_at", { ascending: false }).limit(40);
   if (res.error) throw new Error(res.error.message);
   const rows = (res.data || []) as unknown as Record<string, unknown>[];
   const quotes = await Promise.all(rows.map(async (r) => {
     const q = await sb.rpc("customer_quote_comparison", { target_requirement: r.id });
     return ((q.data || []) as Record<string, unknown>[]).map((x): RfqQuoteSummary => ({ id: String(x.quote_id), vendorId: String(x.vendor_id), vendorName: String(x.vendor_name), status: String(x.quote_status), coveragePercent: num(x.coverage_percent), total: num(x.customer_total), deliveryFee: num(x.delivery_fee), validUntil: (x.valid_until as string | null) || undefined }));
   }));
+  const documents = await Promise.all(rows.map(async (r) => Promise.all(
+    ((r.customer_requirement_files || []) as Record<string, unknown>[]).map(async (file): Promise<CustomerRfqDocument> => {
+      const path = String(file.storage_path || "");
+      if (!path) throw new Error("A saved RFQ document is missing its storage path.");
+      const signed = await sb.storage.from("customer-requirements").createSignedUrl(path, 3600);
+      if (signed.error) throw new Error(signed.error.message);
+      return {
+        id: String(file.id),
+        fileName: String(file.file_name),
+        contentType: (file.content_type as string | null) || undefined,
+        createdAt: String(file.created_at),
+        url: signed.data.signedUrl,
+      };
+    }),
+  )));
   const awardedIds = rows.filter((r) => r.status === "awarded").map((r) => String(r.id));
   const orders = awardedIds.length ? await sb.from("orders").select("requirement_id,order_number,customer_total,status").in("requirement_id", awardedIds) : { data: [] as Record<string, unknown>[] };
   return rows.map((r, i) => {
     const order = ((orders.data || []) as Record<string, unknown>[]).find((o) => o.requirement_id === r.id);
     return {
       id: String(r.id), title: String(r.title), locality: String(r.locality), deliveryDate: String(r.delivery_date), quoteDeadline: String(r.quote_deadline), fulfilment: String(r.fulfilment_mode), status: String(r.status),
-      invited: num(r.invited_count), items: ((r.requirement_items || []) as Record<string, unknown>[]).map(mapItem), quotes: quotes[i], awardedQuoteId: (r.awarded_quote_id as string | null) || null,
+      invited: num(r.invited_count), items: ((r.requirement_items || []) as Record<string, unknown>[]).map(mapItem), documents: documents[i], quotes: quotes[i], awardedQuoteId: (r.awarded_quote_id as string | null) || null,
       order: order ? { number: String(order.order_number), total: num(order.customer_total), status: String(order.status) } : undefined,
     };
   });
+}
+
+export async function uploadCustomerRfqDocument(requirementId: string, file: File): Promise<void> {
+  if (file.size === 0) throw new Error("Choose a non-empty document to upload.");
+  if (file.size > 20 * 1024 * 1024) throw new Error("Each document must be 20 MB or smaller.");
+  const sb = client();
+  const auth = await sb.auth.getUser();
+  if (auth.error) throw new Error(auth.error.message);
+  if (!auth.data.user) throw new Error("Sign in again before uploading a document.");
+  const fileName = file.name.replace(/[\\/]/g, "-").replace(/[^a-zA-Z0-9._-]/g, "-").slice(-120);
+  if (!fileName) throw new Error("The selected document has an invalid file name.");
+  const storagePath = `${auth.data.user.id}/${requirementId}/${crypto.randomUUID()}-${fileName}`;
+  const storage = sb.storage.from("customer-requirements");
+  const uploaded = await storage.upload(storagePath, file, { contentType: file.type || "application/octet-stream", upsert: false });
+  if (uploaded.error) throw new Error(uploaded.error.message);
+
+  const saved = await sb.from("customer_requirement_files").insert({
+    requirement_id: requirementId,
+    storage_path: storagePath,
+    file_name: file.name,
+    content_type: file.type || null,
+    uploaded_by: auth.data.user.id,
+  });
+  if (saved.error) {
+    const removed = await storage.remove([storagePath]);
+    if (removed.error) throw new Error(`${saved.error.message} The uploaded file could not be removed: ${removed.error.message}`);
+    throw new Error(saved.error.message);
+  }
 }
 
 export async function acceptQuote(quoteId: string): Promise<{ orderId: string; orderNumber: string; total: number }> {

@@ -55,6 +55,11 @@ function resolveFulfilmentMode(vendor: { delivery_enabled?: boolean | null; pick
 const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
 function addDays(dateISO: string, days: number) { const date = new Date(`${dateISO}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); }
+function isFutureDate(dateISO: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateISO)) return false;
+  const parsed = new Date(`${dateISO}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === dateISO && dateISO > new Date().toISOString().slice(0, 10);
+}
 function scheduleDates(schedule: { start_date: string; end_date?: string | null; recurrence: string; weekdays?: number[] | null }) {
   const start = String(schedule.start_date);
   const mode = String(schedule.recurrence || "once");
@@ -123,6 +128,21 @@ async function commerceSnapshot(ctx: Awaited<ReturnType<typeof identity>>) {
     if (assignmentResult.error) throw assignmentResult.error;
     staff = staffResult.data || [];
     assignments = assignmentResult.data || [];
+  } else if (role === "customer" && orders.data?.length) {
+    const customerOrderIds = orders.data.map((order) => String(order.id));
+    const assignmentResult = await admin.from("delivery_assignments")
+      .select("id,order_id,vendor_id,delivery_staff_id,assigned_at,completed_at")
+      .in("order_id", customerOrderIds);
+    if (assignmentResult.error) throw assignmentResult.error;
+    assignments = assignmentResult.data || [];
+    const assignedStaffIds = [...new Set(assignments.map((assignment) => String(assignment.delivery_staff_id)))];
+    if (assignedStaffIds.length) {
+      const staffResult = await admin.from("vendor_delivery_staff")
+        .select("id,vendor_id,full_name,phone,active")
+        .in("id", assignedStaffIds);
+      if (staffResult.error) throw staffResult.error;
+      staff = staffResult.data || [];
+    }
   } else if (role === "operations" || role === "admin") {
     const [staffResult, assignmentResult] = await Promise.all([
       admin.from("vendor_delivery_staff").select("id,vendor_id,full_name,phone,active,created_at,updated_at").order("created_at"),
@@ -210,6 +230,7 @@ export async function POST(request: Request) {
       }
       if (!grouped.size) return NextResponse.json({ error: "The items in your cart are no longer available." }, { status: 409 });
       const scheduledDate = String(body.scheduledDate || addDays(new Date().toISOString().slice(0,10), 1));
+      if (!isFutureDate(scheduledDate)) return NextResponse.json({ error: "Choose a delivery date after today." }, { status: 400 });
       const scheduledSlot = String(body.slot || "07:00–08:00 AM");
       const orderIds: string[] = [];
       for (const [vendorId, items] of grouped.entries()) {
@@ -249,9 +270,12 @@ export async function POST(request: Request) {
       const quantity = Math.max(0.001, Number(body.quantity || 1));
       const customerPrice = Math.max(0, Number(body.customerPrice || product.vendor_base_price));
       const startDate = String(body.startDate || "");
+      const endDate = body.endDate ? String(body.endDate) : "";
+      if (!isFutureDate(startDate)) return NextResponse.json({ error: "Choose a first delivery date after today." }, { status: 400 });
+      if (endDate && (!isFutureDate(endDate) || endDate < startDate)) return NextResponse.json({ error: "Choose an end date on or after the first delivery date." }, { status: 400 });
       const scheduleInsert = await admin.from("product_schedules").insert({
         customer_id: profile.id, vendor_id: product.vendor_id, menu_item_id: product.id,
-        start_date: startDate, end_date: body.endDate ? String(body.endDate) : null,
+        start_date: startDate, end_date: endDate || null,
         recurrence: recurrence(String(body.recurrence || "once")),
         weekdays: Array.isArray(body.weekdays) ? body.weekdays.map((d) => weekdayMap[String(d)]).filter((n) => Number.isInteger(n)) : [],
         scheduled_slot: String(body.slot || "Vendor to confirm"), quantity, unit: String(body.unit || product.unit),
