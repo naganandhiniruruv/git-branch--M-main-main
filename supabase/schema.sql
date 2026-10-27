@@ -49,6 +49,7 @@ create table public.vendors (
   verification_status public.verification_status not null default 'draft',
   operational_status public.operational_status not null default 'inactive',
   marketplace_visible boolean not null default false,
+  connect_enabled boolean not null default false,
   billing_status text not null default 'launch_free',
   cut_off_time time not null default '18:00',
   created_at timestamptz not null default now(),

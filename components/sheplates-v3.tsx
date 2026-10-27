@@ -36,10 +36,10 @@ import { categories, categoryVisual } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
 import { nutritionLooksConsistent, type Nutrition } from "@/lib/nutrition";
 import {
-  decideLiveVendorVerification, getAccessToken, isLiveSupabaseMode, isSupabaseConfigured,
+  decideLiveVendorVerification, getAccessToken, isLiveSupabaseMode, isSupabaseConfigured, normalizeWhatsAppNumber,
   loadLiveCustomerPreference, loadLiveCustomerMemory, clearLiveCustomerMemory, loadLiveMarketplace, loadLiveOperationsWorkspace, loadLiveVendorWorkspace, loadLiveCommerceSnapshot,
   loadLiveNotifications, markLiveNotificationsRead, saveLiveCustomerProfile,
-  liveSignOut, saveLiveCustomerLocation, saveLiveVendorLocation, saveLiveVendorProduct,
+  liveSignOut, saveLiveCustomerLocation, saveLiveVendorLocation, saveLiveVendorProduct, saveLiveVendorConnect,
   saveLiveMarketplaceHome, saveLiveCampaign, deleteLiveCampaign, uploadLiveProductImage, submitLiveVendorApplication, updateLiveVendorControls, saveLiveVendorPlan, createLiveScheduledCheckout, syncLiveCart, checkoutLiveCart, markLiveOrderPaid, saveLiveDeliveryStaff, deleteLiveDeliveryStaff, assignLiveDeliveryStaff, resubmitLiveVendorVerification, saveLiveOutletCertificate, uploadLiveCertificate, updateLiveOrderStatus, rescheduleLiveOrder, notifyLiveNutritionReview, saveLiveTourCompleted,
   loadLiveTasteProfile, saveLiveTasteProfile, recordLiveTasteFeedback, fetchLiveFoodAttributes,
   loadLiveFoodDrops, loadLiveVendorFoodDrops, createLiveFoodDrop, cancelLiveFoodDrop, claimLiveFoodDrop, loadLiveFoodDropClaims,
@@ -128,6 +128,7 @@ export type Vendor = {
   pickup: boolean; openToday: boolean; fssaiNumber: string; certificateName: string; expiryDate: string;
   verification: Verification; operational: "Inactive" | "Active" | "Paused"; plan: "Launch" | "Growth" | "Premium";
   logoUrl?: string; bannerUrl?: string; outlets?: VendorOutlet[];
+  connectEnabled?: boolean; connectWhatsappNumber?: string; connectCapabilityAvailable?: boolean;
 };
 type VendorOutlet = { id: string; name: string; address: string; latitude?: number; longitude?: number; radiusKm: number; openToday: boolean; certificateNumber?: string; certificateName?: string; certificateExpiry?: string };
 type Schedule = {
@@ -510,6 +511,8 @@ function vendorFromLive(row: LiveVendorRow, identity?: { email?: string; name?: 
     radiusKm: Number(row.service_radius_km), delivery: row.delivery_enabled, pickup: row.pickup_enabled,
     openToday: row.store_open_today, verification: verificationFromLive(row.verification_status),
     operational: operationalFromLive(row.operational_status), plan: planFromCode(planCodeFromEmbed(row.vendor_plans)),
+    connectEnabled: row.connect_enabled === true, connectWhatsappNumber: row.whatsapp_number || "",
+    connectCapabilityAvailable: typeof row.connect_enabled === "boolean",
     fssaiNumber: String(document?.document_number || "Submitted"),
     certificateName: String(document?.storage_path || "Private certificate"), expiryDate: String(document?.expiry_date || "—"),
   };
@@ -1214,7 +1217,7 @@ function OrderDetail({ label, value }: { label: string; value: string }) { retur
 function VendorOnboarding({ session, setState, onLogout, operationsCreated = false, close }: { session: DemoSession; setState: React.Dispatch<React.SetStateAction<V3State>>; onLogout?: () => void; operationsCreated?: boolean; close?: () => void }) {
   const [step, setStep] = useState(1), [locating, setLocating] = useState(false), [mapBusy, setMapBusy] = useState(false), [file, setFile] = useState<File | null>(null), [busy, setBusy] = useState(false);
   const firstVendorAccount = demoAccounts.find((account) => account.role === "vendor")!;
-  const [form, setForm] = useState({ businessName: "", ownerName: operationsCreated ? firstVendorAccount.name : session.name, ownerEmail: operationsCreated ? firstVendorAccount.email : session.email, category: "Groceries", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, radius: 5, delivery: true, pickup: true, fssai: "", expiry: "" });
+  const [form, setForm] = useState({ businessName: "", ownerName: operationsCreated ? firstVendorAccount.name : session.name, ownerEmail: operationsCreated ? firstVendorAccount.email : session.email, category: "Groceries", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, radius: 5, delivery: true, pickup: true, fssai: "", expiry: "", whatsapp: "+91 9080195630" });
   function set<K extends keyof typeof form>(key: K, value: typeof form[K]) { setForm((f) => ({ ...f, [key]: value })); }
   function detect() { if (!navigator.geolocation) return toast.error("Location is unavailable"); setLocating(true); navigator.geolocation.getCurrentPosition(async (position) => { const point = { lat: position.coords.latitude, lng: position.coords.longitude }; set("lat", point.lat); set("lng", point.lng); set("address", `GPS pin ${point.lat.toFixed(5)}, ${point.lng.toFixed(5)} — add store details`); try { const place = await findLocation(point); set("address", place.address); set("lat", place.latitude); set("lng", place.longitude); toast.success(`Actual store GPS location detected (±${Math.round(position.coords.accuracy)} m)`); } catch (error) { toast.info(error instanceof Error ? `${error.message} The exact GPS pin is still saved.` : "The exact GPS pin is saved; add the store details."); } finally { setLocating(false); } }, () => { setLocating(false); toast.info("Allow precise location in Chrome, or search the complete store address"); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }); }
   async function locateAddress() { if (!form.address.trim()) return toast.error("Enter the store address first"); setMapBusy(true); try { const place = await findLocation({ address: form.address }); set("address", place.address); set("lat", place.latitude); set("lng", place.longitude); toast.success("Store address pinned on the map"); } catch (error) { toast.error(error instanceof Error ? error.message : "Address was not found"); } finally { setMapBusy(false); } }
@@ -1222,19 +1225,21 @@ function VendorOnboarding({ session, setState, onLogout, operationsCreated = fal
     if (!form.businessName || !form.ownerEmail || !form.address || !form.fssai || !form.expiry || !file) return toast.error("Complete all business and certification fields");
     if (!Number.isFinite(form.lat) || !Number.isFinite(form.lng)) return toast.error("Detect the store GPS location or find its typed address on the map first");
     if (!form.delivery && !form.pickup) return toast.error("Enable delivery or pickup");
+    const whatsappNumber = normalizeWhatsAppNumber(form.whatsapp);
+    if (!whatsappNumber) return toast.error("Enter a valid international WhatsApp number.");
     setBusy(true);
     let vendorId = id("VEN");
     try {
-      if (!operationsCreated && session.userId && process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured()) vendorId = await submitLiveVendorApplication({ userId: session.userId, businessName: form.businessName, category: form.category, locality: form.address, fssaiNumber: form.fssai, expiryDate: form.expiry, certificate: file, address: form.address, latitude: form.lat, longitude: form.lng, radiusKm: form.radius, delivery: form.delivery, pickup: form.pickup });
+      if (!operationsCreated && session.userId && process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured()) vendorId = await submitLiveVendorApplication({ userId: session.userId, businessName: form.businessName, category: form.category, locality: form.address, fssaiNumber: form.fssai, expiryDate: form.expiry, certificate: file, address: form.address, latitude: form.lat, longitude: form.lng, radiusKm: form.radius, delivery: form.delivery, pickup: form.pickup, whatsappNumber, operatingHours: { duration_hours: 7 } });
       const vendor: Vendor = { id: vendorId, ownerEmail: form.ownerEmail, ownerName: form.ownerName, businessName: form.businessName, category: form.category, address: form.address, latitude: form.lat, longitude: form.lng, radiusKm: form.radius, delivery: form.delivery, pickup: form.pickup, openToday: false, fssaiNumber: form.fssai, certificateName: file.name, expiryDate: form.expiry, verification: "Submitted", operational: "Inactive", plan: "Launch" };
       setState((s) => ({ ...s, vendors: [vendor, ...s.vendors.filter((v) => v.ownerEmail !== vendor.ownerEmail)], notifications: [notice(form.ownerEmail, "vendor", "Application submitted", "Operations will verify your certificate and business details."), ...s.notifications], audit: [audit(session, operationsCreated ? "Operations onboarded vendor" : "Submitted vendor application", form.businessName), ...s.audit] }));
       toast.success("Vendor application sent to Operations"); close?.();
     } catch (caught) { toast.error(caught instanceof Error ? caught.message : "Application could not be submitted"); } finally { setBusy(false); }
   }
   return <div className={operationsCreated ? "sp-v7" : "sp-v7 min-h-screen bg-[#f2f4ed] p-4 sm:p-8"}>{!operationsCreated && <div className="mx-auto flex max-w-6xl items-center justify-between"><Logo /><button onClick={onLogout} className="text-sm font-bold text-stone-500">Sign out</button></div>}<div className={`${operationsCreated ? "" : "mx-auto mt-8 max-w-6xl"}`}><div className="surface-card rounded-[34px] p-6 shadow-xl sm:p-8"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-[.15em] text-[#5ba400]">Vendor onboarding · {step}/4</p><h1 className="mt-2 text-xl font-black">{["Business profile", "Location & service radius", "Fulfilment controls", "Food certification"][step - 1]}</h1></div><div className="flex gap-1">{[1, 2, 3, 4].map((n) => <span key={n} className={`h-2 w-12 rounded-full ${n <= step ? "bg-[#5ba400]" : "bg-stone-200"}`} />)}</div></div>
-  {step === 1 && <div className="mt-7 grid gap-5 md:grid-cols-2"><Field label="Business name"><input value={form.businessName} onChange={(e) => set("businessName", e.target.value)} className={inputClass} /></Field><Field label="Category"><Select value={form.category} onValueChange={(value) => set("category", value)}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{categoryNames.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><Field label="Owner name"><input value={form.ownerName} disabled={operationsCreated} onChange={(e) => set("ownerName", e.target.value)} className={inputClass} /></Field>{operationsCreated ? <Field label="Assign to vendor login" hint="The vendor will appear when this exact account signs in."><Select value={form.ownerEmail} onValueChange={(email) => { const account = demoAccounts.find((item) => item.email === email)!; set("ownerEmail", email); set("ownerName", account.name); }}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{demoAccounts.filter((account) => account.role === "vendor").map((account) => <SelectItem key={account.email} value={account.email}>{account.name} · {account.email}</SelectItem>)}</SelectContent></Select></Field> : <Field label="Owner email"><input type="email" value={form.ownerEmail} disabled className={inputClass} /></Field>}</div>}
+  {step === 1 && <div className="mt-7 grid gap-5 md:grid-cols-2"><Field label="Business name"><input value={form.businessName} onChange={(e) => set("businessName", e.target.value)} className={inputClass} /></Field><Field label="Category"><Select value={form.category} onValueChange={(value) => set("category", value)}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{categoryNames.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><Field label="Owner name"><input value={form.ownerName} disabled={operationsCreated} onChange={(e) => set("ownerName", e.target.value)} className={inputClass} /></Field>{operationsCreated ? <Field label="Assign to vendor login" hint="The vendor will appear when this exact account signs in."><Select value={form.ownerEmail} onValueChange={(email) => { const account = demoAccounts.find((item) => item.email === email)!; set("ownerEmail", email); set("ownerName", account.name); }}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{demoAccounts.filter((account) => account.role === "vendor").map((account) => <SelectItem key={account.email} value={account.email}>{account.name} · {account.email}</SelectItem>)}</SelectContent></Select></Field> : <Field label="Owner email"><input type="email" value={form.ownerEmail} disabled className={inputClass} /></Field>}<Field label="WhatsApp number" hint="Editable default number in international format."><input type="tel" inputMode="tel" autoComplete="tel" value={form.whatsapp} onChange={(e) => set("whatsapp", e.target.value)} className={inputClass} /></Field></div>}
   {step === 2 && <div className="mt-7 grid gap-6 lg:grid-cols-[.85fr_1.15fr]"><div className="space-y-4"><Field label="Full store address"><Textarea value={form.address} onChange={(e) => set("address", e.target.value)} className="min-h-28 rounded-xl" placeholder="Street, landmark, area, city and PIN" /></Field><LocationSuggestions query={form.address} onSelect={(place) => { set("address", place.address); set("lat", place.latitude); set("lng", place.longitude); }} /><div className="flex flex-wrap gap-2"><Button onClick={detect} disabled={locating} variant="outline" className="rounded-xl"><LocateFixed className={locating ? "animate-spin" : ""} />{locating ? "Finding current address…" : "Use current location"}</Button><Button onClick={locateAddress} disabled={mapBusy} variant="outline" className="rounded-xl"><Search className={mapBusy ? "animate-pulse" : ""} />{mapBusy ? "Finding…" : "Find typed address"}</Button></div><Field label={`Supply radius · ${form.radius} km`} hint="You can adjust this daily after onboarding"><Slider value={[form.radius]} min={1} max={30} step={1} onValueChange={(value) => set("radius", value[0])} /></Field></div><MapPreview lat={form.lat} lng={form.lng} radius={form.radius} label="Store service location" /></div>}
-  {step === 3 && <div className="mt-7 grid gap-4 md:grid-cols-3"><ToggleCard icon={Truck} title="Vendor delivery" body="Your own staff delivers orders" checked={form.delivery} setChecked={(v) => set("delivery", v)} /><ToggleCard icon={ShoppingBag} title="Self pickup" body="Customer collects from your store" checked={form.pickup} setChecked={(v) => set("pickup", v)} /><div className="surface-card-muted rounded-3xl p-5"><Store className="text-[#5ba400]" /><h3 className="mt-4 font-black">Closed until verified</h3><p className="mt-2 text-sm leading-6 text-stone-500">After approval, you can open or close for the day without changing your profile.</p></div></div>}
+  {step === 3 && <div className="mt-7 grid gap-4 md:grid-cols-3"><ToggleCard icon={Truck} title="Vendor delivery" body="Your own staff delivers orders" checked={form.delivery} setChecked={(v) => set("delivery", v)} /><ToggleCard icon={ShoppingBag} title="Self pickup" body="Customer collects from your store" checked={form.pickup} setChecked={(v) => set("pickup", v)} /><div className="surface-card-muted rounded-3xl p-5"><Store className="text-[#5ba400]" /><h3 className="mt-4 font-black">Operating duration: 7 hours</h3><p className="mt-2 text-sm leading-6 text-stone-500">No fixed opening or closing time was provided. You can set a schedule later.</p><p className="mt-3 text-xs font-bold text-stone-500">Closed until verified. After approval, you can open or close for the day without changing your profile.</p></div></div>}
   {step === 4 && <div className="mt-7 grid gap-5 md:grid-cols-2"><Field label="Food certificate / FSSAI number"><input value={form.fssai} onChange={(e) => set("fssai", e.target.value)} className={inputClass} /></Field><Field label="Expiry date"><input type="date" min={tomorrow()} value={form.expiry} onChange={(e) => set("expiry", e.target.value)} className={inputClass} /></Field><label className="surface-card-muted md:col-span-2 grid min-h-36 cursor-pointer place-items-center rounded-3xl border-2 border-dashed p-5 text-center"><input type="file" accept=".pdf,.png,.jpg,.jpeg" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} /><Upload className="mx-auto text-[#ef3d3d]" /><div className="mt-2 font-black">{file?.name || "Upload certificate PDF or image"}</div><div className="text-xs text-stone-500">Private document; accessible only to this vendor and authorised Operations/Admin users.</div></label></div>}
   <div className="mt-8 flex justify-between"><Button variant="outline" disabled={step === 1} onClick={() => setStep((s) => s - 1)} className="rounded-xl"><ArrowLeft />Back</Button>{step < 4 ? <Button onClick={() => setStep((s) => s + 1)} className="rounded-xl bg-[#5ba400] hover:bg-[#4c8c00]">Continue<ArrowRight /></Button> : <Button onClick={submit} disabled={busy} className="rounded-xl bg-[#ef3d3d] hover:bg-[#d92f2f]"><FileCheck2 />{busy ? "Submitting…" : "Submit for verification"}</Button>}</div></div></div></div>;
 }
@@ -2285,11 +2290,142 @@ function AIInsights({ role, state }: { role: "operations" | "admin"; state: V3St
 
 function StoreRadius({ vendor, setState, session }: { vendor: Vendor; setState: React.Dispatch<React.SetStateAction<V3State>>; session: DemoSession }) {
   const [radius, setRadius] = useState(vendor.radiusKm), [address, setAddress] = useState(vendor.address), [coords, setCoords] = useState<{ lat?: number; lng?: number }>({ lat: vendor.latitude, lng: vendor.longitude }), [locating, setLocating] = useState(false), [mapBusy, setMapBusy] = useState(false);
+  const [connectWhatsapp, setConnectWhatsapp] = useState(vendor.connectWhatsappNumber || "");
+  const [connectSaving, setConnectSaving] = useState(false);
+  const [connectMessage, setConnectMessage] = useState("");
+  const [connectError, setConnectError] = useState("");
+  const canManageConnect = isLiveSupabaseMode() && vendor.connectCapabilityAvailable === true;
+  async function saveConnect(enabled: boolean) {
+    setConnectSaving(true);
+    setConnectError("");
+    setConnectMessage("");
+    try {
+      await saveLiveVendorConnect({
+        vendorId: vendor.id,
+        enabled,
+        ...(enabled ? { whatsappNumber: connectWhatsapp } : {}),
+      });
+      let normalizedNumber = vendor.connectWhatsappNumber || "";
+      if (enabled) {
+        const normalized = normalizeWhatsAppNumber(connectWhatsapp);
+        if (!normalized) throw new Error("Enter a valid WhatsApp number in international format.");
+        normalizedNumber = normalized;
+      }
+      setState((current) => ({
+        ...current,
+        vendors: current.vendors.map((item) => item.id === vendor.id
+          ? { ...item, connectEnabled: enabled, connectWhatsappNumber: normalizedNumber || "" }
+          : item),
+        audit: [audit(session, enabled ? "Enabled Connect" : "Disabled Connect", vendor.businessName), ...current.audit],
+      }));
+      if (enabled) setConnectWhatsapp(normalizedNumber);
+      const message = enabled ? "Connect enabled for this vendor." : "Connect disabled for this vendor.";
+      setConnectMessage(message);
+      toast.success(message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Connect settings could not be saved.";
+      setConnectError(message);
+      toast.error(message);
+    } finally {
+      setConnectSaving(false);
+    }
+  }
   async function update(patch: Partial<Vendor>, message: string) { try { if (isLiveSupabaseMode()) await updateLiveVendorControls(vendor.id, { ...(patch.openToday !== undefined ? { store_open_today: patch.openToday } : {}), ...(patch.operational ? { operational_status: patch.operational.toLowerCase() } : {}), ...(patch.delivery !== undefined ? { delivery_enabled: patch.delivery } : {}), ...(patch.pickup !== undefined ? { pickup_enabled: patch.pickup } : {}), ...(patch.openToday === true && vendor.verification === "Verified" ? { marketplace_visible: true } : {}) }); setState((s) => ({ ...s, vendors: s.vendors.map((x) => x.id === vendor.id ? { ...x, ...patch } : x), audit: [audit(session, message, vendor.businessName), ...s.audit] })); toast.success(message); } catch (error) { toast.error(error instanceof Error ? error.message : "Store control could not be saved"); } }
-  function detectStore() { if (!navigator.geolocation) return toast.error("Location is unavailable"); setLocating(true); navigator.geolocation.getCurrentPosition(async (position) => { const point = { lat: position.coords.latitude, lng: position.coords.longitude }; setCoords(point); setAddress(`GPS pin ${point.lat.toFixed(5)}, ${point.lng.toFixed(5)} — add store details`); try { const place = await findLocation(point); setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); toast.success(`Actual store GPS location detected (±${Math.round(position.coords.accuracy)} m)`); } catch (error) { toast.info(error instanceof Error ? `${error.message} The exact GPS pin is still shown.` : "The exact GPS pin is shown."); } finally { setLocating(false); } }, () => { setLocating(false); toast.error("Allow precise location for localhost in Chrome, or search the store address"); }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }); }
+  function detectStore() {
+    if (!navigator.geolocation) return toast.error("Location detection is not supported in this browser.");
+    if (!window.isSecureContext) return toast.error("Location requires HTTPS or localhost. Open the app on a secure page and try again.");
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      const point = { lat: position.coords.latitude, lng: position.coords.longitude };
+      setCoords(point);
+      setAddress(`GPS pin ${point.lat.toFixed(5)}, ${point.lng.toFixed(5)} — add store details`);
+      try {
+        const place = await findLocation(point);
+        setAddress(place.address);
+        setCoords({ lat: place.latitude, lng: place.longitude });
+        toast.success(`Actual store GPS location detected (±${Math.round(position.coords.accuracy)} m)`);
+      } catch (error) {
+        toast.info(error instanceof Error ? `${error.message} The exact GPS pin is still shown.` : "The exact GPS pin is shown.");
+      } finally {
+        setLocating(false);
+      }
+    }, (error) => {
+      setLocating(false);
+      if (error.code === error.PERMISSION_DENIED) {
+        toast.error("Location permission is blocked. In Chrome, open the site settings from the icon beside the address, set Location to Allow, then retry. You can also search the store address.");
+      } else if (error.code === error.POSITION_UNAVAILABLE) {
+        toast.error("Your device could not determine its location. Turn on Windows Location services and retry, or search the store address.");
+      } else if (error.code === error.TIMEOUT) {
+        toast.error("Location detection timed out. Retry near a window or search the store address.");
+      } else {
+        toast.error(error.message || "Location could not be detected. Search the store address instead.");
+      }
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  }
   async function findStore() { if (!address.trim()) return toast.error("Enter the complete store address first"); setMapBusy(true); try { const place = await findLocation({ address }); setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); toast.success("Store address located on the map"); } catch (error) { toast.error(error instanceof Error ? error.message : "Store address was not found"); } finally { setMapBusy(false); } }
   async function saveStorePin() { if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lng)) return toast.error("Detect GPS or find the store address before saving"); try { if (session.userId && process.env.NEXT_PUBLIC_DEMO_MODE === "false" && isSupabaseConfigured()) await saveLiveVendorLocation({ vendorId: vendor.id, address, latitude: coords.lat!, longitude: coords.lng!, radiusKm: radius }); update({ address, latitude: coords.lat, longitude: coords.lng, radiusKm: radius }, "Store pin and service radius updated"); } catch (error) { toast.error(error instanceof Error ? error.message : "Store location could not be saved"); } }
-  return <div className="space-y-6"><Heading eyebrow="DAILY SERVICE CONTROL" title="Store location, radius & fulfilment" body="Customer matching uses this exact store pin and the saved service radius—not the address text alone." /><div className="grid gap-5 lg:grid-cols-[.85fr_1.15fr]"><div className="surface-card space-y-4 rounded-[28px] p-6"><div data-tour="store-open"><ToggleCard icon={Store} title={vendor.openToday ? "Open today" : "Closed today"} body={vendor.verification === "Verified" ? "Customers inside your saved radius can see active in-stock items while open." : "Verification is still required before customers can see items."} checked={vendor.openToday} setChecked={(value) => update({ openToday: value, operational: value && vendor.verification === "Verified" ? "Active" : value ? "Inactive" : "Paused" }, value ? "Store opened for today" : "Store closed for today")} /></div><Field label="Full store address"><Textarea value={address} onChange={(event) => setAddress(event.target.value)} className="min-h-24 rounded-xl" /></Field><LocationSuggestions query={address} onSelect={(place) => { setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); }} /><div className="flex flex-wrap gap-2"><Button onClick={detectStore} disabled={locating} className="rounded-xl bg-[#5ba400]"><LocateFixed className={locating ? "animate-spin" : ""} />{locating ? "Getting fresh GPS…" : "Use actual store GPS"}</Button><Button onClick={findStore} disabled={mapBusy} variant="outline" className="rounded-xl"><Search />{mapBusy ? "Searching…" : "Find typed address"}</Button></div><Field label={`Supply radius · ${radius} km`} hint="This is measured from the exact store pin shown on the map."><Slider value={[radius]} min={1} max={30} step={1} onValueChange={(v) => setRadius(v[0])} /></Field><Button onClick={saveStorePin} className="w-full rounded-xl bg-[#ef3d3d]"><Check />Save store pin & radius</Button><div className="grid grid-cols-2 gap-3"><ToggleCard icon={Truck} title="Delivery" body="Your own team" checked={vendor.delivery} setChecked={(v) => update({ delivery: v }, "Delivery mode updated")} /><ToggleCard icon={ShoppingBag} title="Pickup" body="At your store" checked={vendor.pickup} setChecked={(v) => update({ pickup: v }, "Pickup mode updated")} /></div></div><MapPreview lat={coords.lat} lng={coords.lng} radius={radius} label="Exact store pin" /></div></div>;
+  return <div className="space-y-6">
+    <Heading eyebrow="DAILY SERVICE CONTROL" title="Store location, radius & fulfilment" body="Customer matching uses this exact store pin and the saved service radius—not the address text alone." />
+    <div className="grid gap-5 lg:grid-cols-[.85fr_1.15fr]">
+      <div className="surface-card space-y-4 rounded-[28px] p-6">
+        <div data-tour="store-open"><ToggleCard icon={Store} title={vendor.openToday ? "Open today" : "Closed today"} body={vendor.verification === "Verified" ? "Customers inside your saved radius can see active in-stock items while open." : "Verification is still required before customers can see items."} checked={vendor.openToday} setChecked={(value) => update({ openToday: value, operational: value && vendor.verification === "Verified" ? "Active" : value ? "Inactive" : "Paused" }, value ? "Store opened for today" : "Store closed for today")} /></div>
+        <Field label="Full store address"><Textarea value={address} onChange={(event) => setAddress(event.target.value)} className="min-h-24 rounded-xl" /></Field>
+        <LocationSuggestions query={address} onSelect={(place) => { setAddress(place.address); setCoords({ lat: place.latitude, lng: place.longitude }); }} />
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={detectStore} disabled={locating} className="rounded-xl bg-[#5ba400]"><LocateFixed className={locating ? "animate-spin" : ""} />{locating ? "Getting fresh GPS…" : "Use actual store GPS"}</Button>
+          <Button onClick={findStore} disabled={mapBusy} variant="outline" className="rounded-xl"><Search />{mapBusy ? "Searching…" : "Find typed address"}</Button>
+        </div>
+        <Field label={`Supply radius · ${radius} km`} hint="This is measured from the exact store pin shown on the map."><Slider value={[radius]} min={1} max={30} step={1} onValueChange={(v) => setRadius(v[0])} /></Field>
+        <Button onClick={saveStorePin} className="w-full rounded-xl bg-[#ef3d3d]"><Check />Save store pin & radius</Button>
+        <div className="grid grid-cols-2 gap-3">
+          <ToggleCard icon={Truck} title="Delivery" body="Your own team" checked={vendor.delivery} setChecked={(v) => update({ delivery: v }, "Delivery mode updated")} />
+          <ToggleCard icon={ShoppingBag} title="Pickup" body="At your store" checked={vendor.pickup} setChecked={(v) => update({ pickup: v }, "Pickup mode updated")} />
+        </div>
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4" aria-label="Connect settings">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h3 className="font-black">Direct contact with Connect</h3>
+              <p className="mt-1 text-sm text-stone-600">Let nearby customers discover your store and contact you on WhatsApp. This does not change your subscription plan.</p>
+            </div>
+            <Switch
+              aria-label="Enable Connect"
+              checked={vendor.connectEnabled === true}
+              disabled={!canManageConnect || connectSaving}
+              onCheckedChange={(enabled) => void saveConnect(enabled)}
+            />
+          </div>
+          <div className="mt-4">
+            <Field label="WhatsApp number" hint="Enter a number with country code (for example, +91...). A local number is interpreted as India (+91).">
+              <input
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={connectWhatsapp}
+                onChange={(event) => setConnectWhatsapp(event.target.value)}
+                disabled={!canManageConnect || connectSaving}
+                className={inputClass}
+              />
+            </Field>
+            {vendor.connectEnabled && connectWhatsapp !== (vendor.connectWhatsappNumber || "") && (
+              <Button
+                onClick={() => void saveConnect(true)}
+                disabled={!canManageConnect || connectSaving}
+                className="mt-3 rounded-xl bg-[#5ba400]"
+              >
+                {connectSaving ? "Saving…" : "Save WhatsApp number"}
+              </Button>
+            )}
+          </div>
+          {!isLiveSupabaseMode() && <p className="mt-3 text-xs font-semibold text-amber-800">Connect settings can only be changed in a live vendor account; changes are never saved locally.</p>}
+          {isLiveSupabaseMode() && vendor.connectCapabilityAvailable === false && <p className="mt-3 text-xs font-semibold text-amber-800">Connect activation is unavailable until migration 20261026000400_connect_vendor_capability.sql is manually applied.</p>}
+          {connectSaving && <p role="status" className="mt-3 text-sm font-semibold text-stone-600">Saving Connect settings…</p>}
+          {connectMessage && <p role="status" className="mt-3 text-sm font-semibold text-emerald-700">{connectMessage}</p>}
+          {connectError && <p role="alert" className="mt-3 text-sm font-semibold text-red-700">{connectError}</p>}
+        </section>
+      </div>
+      <MapPreview lat={coords.lat} lng={coords.lng} radius={radius} label="Exact store pin" />
+    </div>
+  </div>;
 }
 function VerificationView({ vendor, setState, session }: { vendor: Vendor; setState: React.Dispatch<React.SetStateAction<V3State>>; session: DemoSession }) {
   const [editing, setEditing] = useState(false);
