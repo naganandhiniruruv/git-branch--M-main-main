@@ -90,7 +90,6 @@ function ConnectVendorCard({ vendor, selected, onSelect }: { vendor: ConnectVend
       <span className="mt-0.5 block truncate text-xs font-bold text-stone-500">{vendor.category} · {vendor.distance_km.toFixed(1)} km</span>
       <span className="mt-1 block truncate text-xs text-stone-500">{vendor.locality || vendor.address || "Address unavailable"}</span>
     </span>
-    <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-black ${vendor.store_open_today ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>{vendor.store_open_today ? "Open today" : "Closed today"}</span>
   </button>;
 }
 
@@ -114,7 +113,6 @@ function ConnectVendorDetails({ vendor, onContact, contactPending, source }: {
         <h2 className="font-black">{vendor.vendor_name}</h2>
         <p className="mt-0.5 text-xs font-bold text-stone-500">{vendor.category} · {vendor.distance_km.toFixed(1)} km away</p>
         <p className="mt-1 text-xs text-stone-500">{vendor.address || vendor.locality || "Address unavailable"}</p>
-        <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-[10px] font-black ${vendor.store_open_today ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>{vendor.store_open_today ? "Open today" : "Closed today"}</span>
       </div>
     </div>
     {vendor.description && <p className="mt-3 text-sm leading-6 text-stone-600">{vendor.description}</p>}

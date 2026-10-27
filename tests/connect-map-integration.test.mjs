@@ -4,13 +4,13 @@ import test from "node:test";
 import {
   hasValidMapCoordinates,
   mergeMarketplaceAndConnectPins,
-  onlyConnectEnabled,
   uniqueValidMapPins,
 } from "../lib/connect-map.ts";
 
 const discover = await readFile(new URL("../components/customer-v2/discover.tsx", import.meta.url), "utf8");
 const mapSource = await readFile(new URL("../components/nearby-vendors-map.tsx", import.meta.url), "utf8");
 const supabase = await readFile(new URL("../lib/supabase.ts", import.meta.url), "utf8");
+const migration = await readFile(new URL("../supabase/migrations/20261027000500_p0_vendor_lifecycle.sql", import.meta.url), "utf8");
 
 const pin = (id, extra = {}) => ({
   id,
@@ -54,11 +54,12 @@ test("missing or invalid WhatsApp numbers suppress the Connect action", () => {
 });
 
 test("disabled or unverified Connect activation never enters map action data", () => {
-  const optedIn = { vendor_id: "enabled", whatsapp_number: "+919080195630" };
-  const optedOut = { vendor_id: "disabled", whatsapp_number: "+919080195630" };
-  assert.deepEqual(onlyConnectEnabled([optedIn, optedOut], new Set(["enabled"])), [optedIn]);
-  assert.match(supabase, /select\("id,connect_enabled"\)/);
-  assert.match(supabase, /return onlyConnectEnabled\(vendors, enabledVendorIds\)/);
+  const load = supabase.slice(supabase.indexOf("export async function loadConnectVendorsNearby"), supabase.indexOf("export async function loadLiveVendorWorkspace"));
+  assert.match(migration, /v\.vendor_kind='p0_connect' AND v\.connect_enabled/i);
+  assert.match(migration, /v\.verification_status='verified' AND v\.operational_status='active'/i);
+  assert.match(migration, /vendor_kind text,vendor_id uuid/);
+  assert.doesNotMatch(load, /from\("vendors"\)/);
+  assert.match(load, /filter\(\(vendor\) => vendor\.vendor_kind === "p0_connect"\)/);
   assert.match(discover, /connectVendor && connectNumber && onContact/);
 });
 

@@ -34,13 +34,22 @@ create table public.vendor_plans (
 
 create table public.vendors (
   id uuid primary key default gen_random_uuid(),
-  owner_id uuid not null references public.profiles(id),
+  owner_id uuid references public.profiles(id),
+  vendor_kind text not null default 'subscription' check (vendor_kind in ('subscription','p0_connect')),
+  p0_created_by uuid references public.profiles(id) on delete set null,
+  p0_cancelled_at timestamptz,
+  p0_contact_name text,
+  p0_contact_phone text,
+  p0_fssai_required boolean not null default false,
   plan_id uuid references public.vendor_plans(id),
   name text not null,
   category text not null,
   description text,
+  logo_url text,
   locality text not null,
   pincode text,
+  whatsapp_number text,
+  operating_hours jsonb,
   latitude numeric,
   longitude numeric,
   service_radius_km numeric(6,2) not null default 5,
@@ -53,7 +62,11 @@ create table public.vendors (
   billing_status text not null default 'launch_free',
   cut_off_time time not null default '18:00',
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint vendors_kind_owner_plan_check check (
+    (vendor_kind='p0_connect' and owner_id is null and plan_id is null)
+    or (vendor_kind='subscription' and owner_id is not null)
+  )
 );
 alter table public.profiles add constraint profiles_vendor_fk foreign key (vendor_id) references public.vendors(id) on delete set null;
 
@@ -265,8 +278,57 @@ create table public.audit_logs (
   created_at timestamptz not null default now()
 );
 
+create table public.p0_vendor_permissions (
+  profile_id uuid primary key references public.profiles(id) on delete cascade,
+  can_create boolean not null default false,
+  can_review boolean not null default false,
+  can_cancel boolean not null default false,
+  can_reactivate boolean not null default false,
+  can_upgrade boolean not null default false,
+  can_upload boolean not null default false,
+  assigned_by uuid not null references public.profiles(id),
+  assigned_at timestamptz not null default now()
+);
+
+create table public.p0_upgrade_invitations (
+  id uuid primary key default gen_random_uuid(),
+  vendor_id uuid not null references public.vendors(id),
+  invited_email text not null,
+  plan_id uuid not null references public.vendor_plans(id),
+  invited_by uuid not null references public.profiles(id),
+  provider_user_id uuid references auth.users(id) on delete set null,
+  status text not null default 'pending'
+    check (status in ('pending','sent','claim_pending','delivery_failed','revoked','expired','completed')),
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index p0_one_live_upgrade_invitation
+on public.p0_upgrade_invitations(vendor_id)
+where status in ('pending','sent','claim_pending','delivery_failed');
+
+create table public.p0_vendor_history (
+  id bigint generated always as identity primary key,
+  vendor_id uuid not null references public.vendors(id),
+  historical_whatsapp_number text not null,
+  reason text not null,
+  recorded_by uuid not null references public.profiles(id),
+  recorded_at timestamptz not null default now()
+);
+
+create table public.vendor_whatsapp_click_events (
+  id uuid primary key default gen_random_uuid(),
+  vendor_id uuid not null references public.vendors(id) on delete cascade,
+  customer_id uuid references public.profiles(id) on delete set null,
+  source text not null check (source in ('map','vendor_profile','search')),
+  created_at timestamptz not null default now()
+);
+
 create index vendor_status_idx on public.vendors(verification_status,operational_status,marketplace_visible);
 create index menu_vendor_active_idx on public.vendor_menu_items(vendor_id,active);
+create index idx_vendor_whatsapp_click_events_vendor_created on public.vendor_whatsapp_click_events(vendor_id,created_at desc);
+create index idx_vendor_whatsapp_click_events_source_created on public.vendor_whatsapp_click_events(source,created_at desc);
 create index requirement_customer_idx on public.customer_requirements(customer_id,status);
 create index invitation_vendor_idx on public.rfq_vendor_invitations(vendor_id,status);
 create index quote_requirement_idx on public.vendor_quotes(requirement_id,status);
@@ -284,6 +346,45 @@ language sql stable security definer set search_path=public as $$
   select exists(select 1 from public.vendors where id=target_vendor and owner_id=auth.uid())
 $$;
 
+create or replace function public.p0_actor_can(p_actor uuid, p_action text) returns boolean
+language sql stable security definer set search_path=public as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id=p_actor
+      and (
+        p.role='admin'
+        or (
+          p.role='operations'
+          and exists (
+            select 1
+            from public.p0_vendor_permissions permission
+            where permission.profile_id=p.id
+              and case p_action
+                when 'create' then permission.can_create
+                when 'review' then permission.can_review
+                when 'cancel' then permission.can_cancel
+                when 'reactivate' then permission.can_reactivate
+                when 'upgrade' then permission.can_upgrade
+                when 'upload' then permission.can_upload
+                else false
+              end
+          )
+        )
+      )
+  )
+$$;
+
+create or replace function public.p0_current_actor_can(p_action text) returns boolean
+language sql stable security definer set search_path=public as $$
+  select public.p0_actor_can(auth.uid(),p_action)
+$$;
+
+revoke all on function public.p0_actor_can(uuid,text) from public,anon,authenticated;
+grant execute on function public.p0_actor_can(uuid,text) to service_role;
+revoke all on function public.p0_current_actor_can(text) from public;
+grant execute on function public.p0_current_actor_can(text) to anon,authenticated;
+
 create or replace function public.marketplace_menu()
 returns table(item_id uuid,vendor_id uuid,vendor_name text,item_name text,category text,unit text,image_url text,customer_price numeric)
 language sql stable security definer set search_path=public as $$
@@ -292,9 +393,119 @@ language sql stable security definer set search_path=public as $$
   from public.vendor_menu_items i
   join public.vendors v on v.id=i.vendor_id
   left join public.vendor_item_markups m on m.menu_item_id=i.id
-  where i.active=true and v.verification_status='verified' and v.operational_status='active' and v.marketplace_visible=true
+  where i.active=true and v.vendor_kind='subscription' and v.verification_status='verified' and v.operational_status='active' and v.marketplace_visible=true
 $$;
 grant execute on function public.marketplace_menu() to anon,authenticated;
+
+drop function if exists public.connect_vendors_nearby(double precision,double precision);
+create function public.connect_vendors_nearby(customer_lat double precision, customer_lng double precision)
+returns table(
+  vendor_kind text,vendor_id uuid,vendor_name text,category text,description text,locality text,address text,
+  latitude double precision,longitude double precision,whatsapp_number text,operating_hours jsonb,
+  logo_url text,distance_km double precision,service_radius_km numeric,store_open_today boolean
+)
+language sql stable security definer set search_path=pg_catalog,public as $$
+  select v.vendor_kind::text,v.id,v.name,v.category,v.description,v.locality,v.address,v.latitude::double precision,
+    v.longitude::double precision,v.whatsapp_number,v.operating_hours,v.logo_url,d.distance_km,
+    v.service_radius_km,v.store_open_today
+  from public.vendors v
+  cross join lateral (
+    select 6371.0*2*asin(sqrt(least(1.0,greatest(0.0,
+      power(sin(radians(v.latitude::double precision-customer_lat)/2),2)
+      +cos(radians(customer_lat))*cos(radians(v.latitude::double precision))
+      *power(sin(radians(v.longitude::double precision-customer_lng)/2),2)
+    )))) as distance_km
+  ) d
+  where customer_lat between -90 and 90 and customer_lng between -180 and 180
+    and v.vendor_kind='p0_connect' and v.connect_enabled
+    and v.verification_status='verified' and v.operational_status='active'
+    and v.marketplace_visible and v.p0_cancelled_at is null
+    and v.latitude between -90 and 90 and v.longitude between -180 and 180
+    and v.whatsapp_number ~ '^\+[1-9][0-9]{7,14}$'
+    and d.distance_km<=v.service_radius_km
+  order by d.distance_km
+$$;
+
+create or replace function public.track_vendor_whatsapp_click(target_vendor_id uuid, click_source text)
+returns uuid
+language plpgsql security definer set search_path=pg_catalog,public as $$
+declare
+  new_event_id uuid;
+  current_customer_id uuid := auth.uid();
+begin
+  if click_source is null or click_source not in ('map','vendor_profile','search') then
+    raise exception 'Invalid WhatsApp click source';
+  end if;
+  if current_customer_id is null or public.current_app_role() is distinct from 'customer'::public.app_role then
+    raise exception 'Only authenticated customers may record WhatsApp contact clicks';
+  end if;
+  if not exists (
+    select 1 from public.vendors v
+    where v.id=target_vendor_id and v.vendor_kind='p0_connect' and v.connect_enabled
+      and v.verification_status='verified' and v.operational_status='active'
+      and v.marketplace_visible and v.p0_cancelled_at is null
+      and v.latitude between -90 and 90 and v.longitude between -180 and 180
+      and v.whatsapp_number ~ '^\+[1-9][0-9]{7,14}$'
+  ) then raise exception 'Vendor is not available for Connect contact'; end if;
+
+  insert into public.vendor_whatsapp_click_events(vendor_id,customer_id,source)
+  values(target_vendor_id,current_customer_id,click_source)
+  returning id into new_event_id;
+  return new_event_id;
+end
+$$;
+
+create or replace function public.marketplace_menu_nearby(customer_lat double precision, customer_lng double precision)
+returns table(
+  item_id uuid,vendor_id uuid,vendor_name text,item_name text,category text,unit text,
+  quantity_step numeric,stock_quantity numeric,image_url text,customer_price numeric,
+  calories_per_unit numeric,protein_g numeric,carbs_g numeric,fat_g numeric,fibre_g numeric,
+  dietary_tags text[],pack_amount numeric,pack_measure text,delivery_enabled boolean,
+  pickup_enabled boolean,distance_km numeric,vendor_lat double precision,vendor_lng double precision,
+  vendor_plan_code text
+)
+language sql stable security definer set search_path=pg_catalog,public as $$
+  with eligible as (
+    select item.id as item_id,vendor.id as vendor_id,vendor.name as vendor_name,
+      item.name as item_name,item.category,item.unit,item.quantity_step,item.stock_quantity,item.image_url,
+      round(item.vendor_base_price*(1+coalesce(markup.markup_percent,0)/100),2) as customer_price,
+      item.calories_per_unit,item.protein_g,item.carbs_g,item.fat_g,item.fibre_g,item.dietary_tags,
+      item.pack_amount,item.pack_measure,vendor.delivery_enabled,vendor.pickup_enabled,
+      vendor.service_radius_km,vendor.latitude::double precision as vendor_lat,
+      vendor.longitude::double precision as vendor_lng,coalesce(plan.code,'launch') as vendor_plan_code,
+      6371*2*asin(sqrt(
+        power(sin(radians((vendor.latitude::double precision-customer_lat)/2)),2)
+        +cos(radians(customer_lat))*cos(radians(vendor.latitude::double precision))
+        *power(sin(radians((vendor.longitude::double precision-customer_lng)/2)),2)
+      )) as calculated_distance_km
+    from public.vendor_menu_items item
+    join public.vendors vendor on vendor.id=item.vendor_id
+    left join public.vendor_item_markups markup on markup.menu_item_id=item.id
+    left join public.vendor_plans plan on plan.id=vendor.plan_id
+    where customer_lat between -90 and 90 and customer_lng between -180 and 180
+      and vendor.vendor_kind='subscription'
+      and vendor.latitude is not null and vendor.longitude is not null
+      and vendor.latitude between -90 and 90 and vendor.longitude between -180 and 180
+      and item.active and item.stock_quantity>0
+      and vendor.verification_status='verified' and vendor.operational_status='active'
+      and vendor.marketplace_visible and vendor.store_open_today
+      and (vendor.delivery_enabled or vendor.pickup_enabled)
+  )
+  select item_id,vendor_id,vendor_name,item_name,category,unit,quantity_step,stock_quantity,image_url,
+    customer_price,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,
+    pack_measure,delivery_enabled,pickup_enabled,round(calculated_distance_km::numeric,2),
+    vendor_lat,vendor_lng,vendor_plan_code
+  from eligible
+  where calculated_distance_km<=service_radius_km
+  order by calculated_distance_km,item_name
+$$;
+
+revoke all on function public.connect_vendors_nearby(double precision,double precision) from public;
+grant execute on function public.connect_vendors_nearby(double precision,double precision) to anon,authenticated;
+revoke all on function public.track_vendor_whatsapp_click(uuid,text) from public,anon;
+grant execute on function public.track_vendor_whatsapp_click(uuid,text) to authenticated;
+revoke all on function public.marketplace_menu_nearby(double precision,double precision) from public,anon;
+grant execute on function public.marketplace_menu_nearby(double precision,double precision) to authenticated;
 
 -- Customers compare only the final sell price. Raw vendor cost and Operations
 -- percentage stay in the sealed quote tables and are not directly customer-readable.
@@ -342,11 +553,15 @@ create trigger on_auth_user_created after insert on auth.users for each row exec
 create or replace function public.guard_profile_privileges() returns trigger
 language plpgsql security definer set search_path=public as $$
 begin
+  if auth.uid() is not null and new.vendor_id is distinct from old.vendor_id and new.vendor_id is not null and
+    exists(select 1 from public.vendors v where v.id=new.vendor_id and v.vendor_kind='p0_connect') then
+    raise exception 'P0 ownership must be established through the authorized upgrade flow';
+  end if;
   if auth.uid() is not null and public.current_app_role()<>'admin' then
     new.role:=old.role;
     if not (
       old.role='vendor' and old.vendor_id is null and new.vendor_id is not null and
-      exists(select 1 from public.vendors v where v.id=new.vendor_id and v.owner_id=auth.uid())
+      exists(select 1 from public.vendors v where v.id=new.vendor_id and v.vendor_kind='subscription' and v.owner_id=auth.uid())
     ) then new.vendor_id:=old.vendor_id; end if;
   end if;
   return new;
@@ -515,6 +730,14 @@ alter table public.cancellation_requests enable row level security;
 alter table public.payment_reversals enable row level security;
 alter table public.ai_actions enable row level security;
 alter table public.audit_logs enable row level security;
+alter table public.p0_vendor_permissions enable row level security;
+alter table public.p0_upgrade_invitations enable row level security;
+alter table public.p0_vendor_history enable row level security;
+alter table public.vendor_whatsapp_click_events enable row level security;
+
+revoke all on table public.p0_vendor_permissions, public.p0_upgrade_invitations, public.p0_vendor_history
+  from public, anon, authenticated;
+revoke all on table public.vendor_whatsapp_click_events from public, anon, authenticated;
 
 create policy profiles_read on public.profiles for select using (id=auth.uid() or public.current_app_role() in ('operations','admin'));
 create policy profiles_update_self on public.profiles for update using (id=auth.uid()) with check (id=auth.uid());
@@ -522,13 +745,45 @@ create policy profiles_admin_update on public.profiles for update using (public.
 create policy plans_authenticated_read on public.vendor_plans for select to authenticated using (active or public.current_app_role()='admin');
 create policy plans_admin_write on public.vendor_plans for all using (public.current_app_role()='admin') with check (public.current_app_role()='admin');
 
-create policy vendors_customer_read on public.vendors for select using ((verification_status='verified' and operational_status='active' and marketplace_visible) or owner_id=auth.uid() or public.current_app_role() in ('operations','admin'));
-create policy vendors_owner_insert on public.vendors for insert with check (owner_id=auth.uid() and public.current_app_role()='vendor');
-create policy vendors_owner_draft_update on public.vendors for update using (owner_id=auth.uid() or public.current_app_role() in ('operations','admin'));
-
-create policy documents_vendor_ops_read on public.vendor_documents for select using (public.owns_vendor(vendor_id) or public.current_app_role() in ('operations','admin'));
+create policy vendors_customer_read on public.vendors for select using (
+  (vendor_kind='subscription' and (
+    (verification_status='verified' and operational_status='active' and marketplace_visible)
+    or owner_id=auth.uid() or public.current_app_role() in ('operations','admin')
+  ))
+  or (vendor_kind='p0_connect' and (
+    public.current_app_role()='admin'
+    or (public.current_app_role()='operations' and (
+      public.p0_current_actor_can('create') or public.p0_current_actor_can('review')
+      or public.p0_current_actor_can('cancel') or public.p0_current_actor_can('reactivate')
+      or public.p0_current_actor_can('upgrade') or public.p0_current_actor_can('upload')
+    ))
+  ))
+);
+create policy vendors_owner_insert on public.vendors for insert
+with check (vendor_kind='subscription' and owner_id=auth.uid() and public.current_app_role()='vendor');
+create policy vendors_owner_draft_update on public.vendors for update
+using (vendor_kind='subscription' and (owner_id=auth.uid() or public.current_app_role() in ('operations','admin')))
+with check (vendor_kind='subscription' and (owner_id=auth.uid() or public.current_app_role() in ('operations','admin')));
+create policy vendors_operations_insert on public.vendors for insert
+with check (vendor_kind='subscription' and owner_id is not null and public.current_app_role() in ('operations','admin'));
+create policy documents_vendor_ops_read on public.vendor_documents for select using (
+  public.owns_vendor(vendor_id)
+  or (public.current_app_role() in ('operations','admin') and (
+    exists(select 1 from public.vendors v where v.id=vendor_id and v.vendor_kind='subscription')
+    or public.current_app_role()='admin'
+    or (public.current_app_role()='operations' and (public.p0_current_actor_can('review') or public.p0_current_actor_can('upload')))
+  ))
+);
 create policy documents_vendor_insert on public.vendor_documents for insert with check (public.owns_vendor(vendor_id));
-create policy documents_ops_update on public.vendor_documents for update using (public.current_app_role() in ('operations','admin'));
+create policy documents_ops_update on public.vendor_documents for update
+using (exists(select 1 from public.vendors v where v.id=vendor_id and (
+  (v.vendor_kind='subscription' and public.current_app_role() in ('operations','admin'))
+  or (v.vendor_kind='p0_connect' and (public.current_app_role()='admin' or (public.current_app_role()='operations' and public.p0_current_actor_can('review')))
+)))
+with check (exists(select 1 from public.vendors v where v.id=vendor_id and (
+  (v.vendor_kind='subscription' and public.current_app_role() in ('operations','admin'))
+  or (v.vendor_kind='p0_connect' and (public.current_app_role()='admin' or (public.current_app_role()='operations' and public.p0_current_actor_can('review')))
+)));
 
 create policy menu_vendor_all on public.vendor_menu_items for all using (public.owns_vendor(vendor_id)) with check (public.owns_vendor(vendor_id));
 create policy menu_ops_admin_read on public.vendor_menu_items for select using (public.current_app_role() in ('operations','admin'));
@@ -571,7 +826,15 @@ create policy audit_actor_insert on public.audit_logs for insert with check (act
 insert into storage.buckets(id,name,public) values ('vendor-certificates','vendor-certificates',false) on conflict do nothing;
 insert into storage.buckets(id,name,public) values ('customer-requirements','customer-requirements',false) on conflict do nothing;
 create policy vendor_certificate_upload on storage.objects for insert to authenticated with check (bucket_id='vendor-certificates' and (storage.foldername(name))[1]=auth.uid()::text and public.current_app_role()='vendor');
-create policy vendor_certificate_read on storage.objects for select to authenticated using (bucket_id='vendor-certificates' and ((storage.foldername(name))[1]=auth.uid()::text or public.current_app_role() in ('operations','admin')));
+create policy vendor_certificate_read on storage.objects for select to authenticated
+using (bucket_id='vendor-certificates' and (
+  (storage.foldername(name))[1]=auth.uid()::text
+  or public.current_app_role()='admin'
+  or (public.current_app_role()='operations' and (
+    not exists(select 1 from public.vendors v where v.id::text=(storage.foldername(name))[1] and v.vendor_kind='p0_connect')
+    or public.p0_current_actor_can('review') or public.p0_current_actor_can('upload')
+  ))
+));
 create policy requirement_file_owner on storage.objects for all to authenticated using (bucket_id='customer-requirements' and ((storage.foldername(name))[1]=auth.uid()::text or public.current_app_role() in ('operations','admin'))) with check (bucket_id='customer-requirements' and ((storage.foldername(name))[1]=auth.uid()::text or public.current_app_role() in ('operations','admin')));
 
 insert into public.vendor_plans(code,name,monthly_price,annual_price,entitlements) values

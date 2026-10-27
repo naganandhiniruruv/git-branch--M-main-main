@@ -447,7 +447,17 @@ function AuthDialog({ audience, close, onLogin }: { audience: Audience | null; c
       const live = await liveSignIn(email, password);
       const permitted = audience === "customer" ? live.profile.role === "customer" : live.profile.role !== "customer";
       if (!permitted) throw new Error(audience === "customer" ? "This account belongs in Vendor / Team login." : "This account belongs in Customer login.");
-      onLogin({ email, name: live.profile.full_name, role: live.profile.role, userId: live.user.id, vendorId: live.profile.vendor_id ?? undefined, toursCompleted: live.profile.tours_completed || [] });
+      onLogin({
+        email,
+        name: live.profile.full_name,
+        role: live.profile.role,
+        userId: live.user.id,
+        vendorId: live.profile.vendor_id ?? undefined,
+        p0UpgradeInvitationId: typeof live.user.user_metadata?.p0_upgrade_invitation_id === "string"
+          ? live.user.user_metadata.p0_upgrade_invitation_id
+          : undefined,
+        toursCompleted: live.profile.tours_completed || [],
+      });
     } catch (caught) {
       setError(authErrorMessage(caught));
     } finally { setBusy(false); }
