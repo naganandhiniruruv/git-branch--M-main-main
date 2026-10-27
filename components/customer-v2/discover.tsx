@@ -9,14 +9,14 @@ import { mergeMarketplaceAndConnectPins, uniqueById } from "@/lib/connect-map";
 import { BadgeCheck, List, MapPin, Search, Timer, Zap, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { MARKET_GROUPS } from "@/lib/market-groups";
-import { claimedPercent, discountPercent, dropDisplayStatus, type FoodDrop } from "@/lib/food-drops";
+import { claimedPercent, discountPercent, dropDisplayStatus, foodDropSchedule, formatCountdown, type FoodDrop } from "@/lib/food-drops";
 import type { NearbyVendorsMap as NearbyVendorsMapComponent, MapVendor, MapPerson } from "@/components/nearby-vendors-map";
 import type { Vendor, V3State } from "@/components/sheplates-v3";
 import type { SocialApi } from "@/lib/social";
 import type { FoodShort, ShortsApi } from "@/lib/food-shorts";
 import type { PeopleApi } from "@/lib/people";
 import { PeopleDistanceChips, PersonRow, usePeopleQuery } from "./people";
-import { EmptyState, PhotoTile, SectionHeader, SegTabs, Stars, categoryEmoji, closesIn, haversineKm, money, shortArea, useIsMobile, useTicker, vendorPhoto, vendorRating } from "./kit";
+import { EmptyState, PhotoTile, SectionHeader, SegTabs, Stars, categoryEmoji, haversineKm, money, shortArea, useIsMobile, useTicker, vendorPhoto, vendorRating } from "./kit";
 
 type Coords = { latitude?: number; longitude?: number; address?: string };
 
@@ -401,10 +401,12 @@ function DropCard({ drop, state, profile, onClaim }: { drop: FoodDrop; state: V3
   const [busy, setBusy] = useState(false);
   const product = state.products.find((p) => p.id === drop.productId); const vendor = state.vendors.find((v) => v.id === drop.vendorId);
   const distance = vendor ? vendorDistanceKm(profile, vendor) : null; const tag = dropTag(drop);
-  const left = drop.remainingQuantity; const urgent = new Date(drop.endsAt).getTime() - now < 3_600_000;
+  const status = dropDisplayStatus(drop, new Date(now));
+  const schedule = foodDropSchedule(drop, new Date(now));
+  const left = drop.remainingQuantity; const urgent = schedule.endsAt.getTime() - now < 3_600_000;
   return <article className="overflow-hidden rounded-[26px] border border-stone-200/70 bg-white shadow-sm">
     <PhotoTile imageUrl={product?.imageUrl} category={product?.category} className="h-48 sm:h-52" emojiSize={64}>
-      <span className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-black text-white shadow-lg ${urgent ? "bg-[#e0194f]" : "bg-[#171914]/85"}`}><Timer className="size-3.5" /><span><span className="block text-[9px] font-bold uppercase leading-none opacity-80">Closes in</span>{closesIn(drop.endsAt, now)}</span></span>
+      <span className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-black text-white shadow-lg ${status === "live" && urgent ? "bg-[#e0194f]" : "bg-[#171914]/85"}`}><Timer className="size-3.5" /><span>{status === "live" ? <><span className="block text-[9px] font-bold uppercase leading-none opacity-80">LIVE · Closes in</span>{formatCountdown(schedule.endsAt.toISOString(), new Date(now))}</> : <><span className="block text-[9px] font-bold uppercase leading-none opacity-80">Scheduled</span>Starts at 8:00 PM</>}</span></span>
       {tag && <span className="absolute right-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-black text-[#c4123f] shadow">{tag}</span>}
       <span className="absolute bottom-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[11px] font-black text-[#e0194f] shadow">{discountPercent(drop)}% off</span>
     </PhotoTile>
@@ -412,7 +414,7 @@ function DropCard({ drop, state, profile, onClaim }: { drop: FoodDrop; state: V3
       <p className="mt-0.5 text-xs font-bold text-stone-500">{vendor?.businessName || "Local vendor"}{distance !== null ? ` · ${distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`}` : ""}</p>
       <div className="mt-3 flex items-end justify-between gap-3">
         <div><div className="flex items-baseline gap-2"><span className="text-xl font-black">{money(drop.dropPrice)}</span><span className="text-xs font-bold text-stone-400 line-through">{money(drop.originalPrice)}</span></div><div className="mt-0.5 text-xs font-bold text-stone-500">{left} pack{left === 1 ? "" : "s"} left</div></div>
-        <button type="button" disabled={busy || left <= 0} onClick={async () => { setBusy(true); try { await onClaim(drop, 1); } finally { setBusy(false); } }} className="rounded-full bg-[#e0194f] px-6 py-2.5 text-sm font-black text-white shadow-[0_10px_24px_rgba(224,25,79,.3)] transition hover:bg-[#c4123f] disabled:opacity-50">{busy ? "Adding…" : "Add +"}</button>
+        <button type="button" disabled={busy || left <= 0 || status !== "live"} onClick={async () => { setBusy(true); try { await onClaim(drop, 1); } finally { setBusy(false); } }} className="rounded-full bg-[#e0194f] px-6 py-2.5 text-sm font-black text-white shadow-[0_10px_24px_rgba(224,25,79,.3)] transition hover:bg-[#c4123f] disabled:opacity-50">{busy ? "Adding…" : status === "live" ? "Add +" : "Available at 8 PM"}</button>
       </div>
       <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-[#e0194f]" style={{ width: `${claimedPercent(drop)}%` }} /></div>
     </div>
@@ -423,7 +425,7 @@ export function FoodDropsTab({ state, profile, social, onClaim, onRefresh }: { s
   const [scope, setScope] = useState<DropScope>("Nearby");
   useEffect(() => { onRefresh(); const id = window.setInterval(onRefresh, 30_000); return () => window.clearInterval(id); }, [onRefresh]);
   const drops = useMemo(() => {
-    const live = state.foodDrops.filter((d) => dropDisplayStatus(d) === "live");
+    const live = state.foodDrops.filter((d) => ["live", "scheduled"].includes(dropDisplayStatus(d)));
     const known = (d: FoodDrop) => state.vendors.find((v) => v.id === d.vendorId);
     const km = (d: FoodDrop) => { const v = known(d); return v ? vendorDistanceKm(profile, v) ?? 99 : 99; };
     if (scope === "Nearby") return live.filter((d) => known(d) && km(d) <= 8).sort((a, b) => new Date(a.endsAt).getTime() - new Date(b.endsAt).getTime());
@@ -432,10 +434,13 @@ export function FoodDropsTab({ state, profile, social, onClaim, onRefresh }: { s
     return [...live].sort((a, b) => new Date(a.endsAt).getTime() - new Date(b.endsAt).getTime());
   }, [state.foodDrops, state.vendors, scope, social.followed, profile]);
   return <div className="space-y-4">
-    <div className="flex items-center gap-2"><span className="grid size-9 place-items-center rounded-full bg-[#fff0f4] text-[#e0194f]"><Zap className="size-5" /></span><div><h1 className="text-xl font-black tracking-[-.02em]">Food Drops</h1><p className="text-xs font-bold text-stone-500">Surplus and limited batches from local vendors — while they last.</p></div></div>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2"><span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#fff0f4] text-[#e0194f]"><Zap className="size-5" /></span><div><h1 className="text-xl font-black tracking-[-.02em]">Food Drops</h1><p className="text-xs font-bold text-stone-500">Surplus and limited batches from local vendors — while they last.</p></div></div>
+      <p className="rounded-2xl border border-[#f4d8df] bg-[#fff7f8] px-4 py-3 text-sm font-bold leading-relaxed text-[#8f2943] sm:max-w-fit">🕗 Food Drops: 8:00 PM – 12:00 AM IST | Grab your favourite deals every evening!</p>
+    </div>
     <SegTabs tabs={DROP_SCOPES} value={scope} onChange={setScope} />
     {drops.length ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{drops.map((drop) => <DropCard key={drop.id} drop={drop} state={state} profile={profile} onClaim={onClaim} />)}</div>
-      : <EmptyState emoji={scope === "Following" ? "💛" : "⚡"} title={scope === "Following" ? "No drops from vendors you follow" : "No live drops here right now"} body={scope === "Following" ? "Follow vendors from their profile and their drops land here first." : "Vendors post drops when they have surplus or a limited batch. Check back soon, or try Across City."} />}
+      : <EmptyState emoji={scope === "Following" ? "💛" : "⚡"} title={scope === "Following" ? "No drops from vendors you follow" : "No drops here right now"} body={scope === "Following" ? "Follow vendors from their profile and their drops land here first." : "Vendors post drops when they have surplus or a limited batch. Check back soon, or try Across City."} />}
   </div>;
 }
 
