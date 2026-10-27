@@ -24,15 +24,19 @@ function iconEl(html: string, size: number, label?: string) {
   return d;
 }
 
-/** ShePlates colours on top of the Ola style: a warm background and soft water. Only touches layers it recognises. */
+/** ShePlates look on top of Ola's "default light" style: warm background, soft water and greens, and none of Ola's
+ * own shop and brand markers, so our vendor pins are the only ones on the map. Layers are matched by the ids
+ * this style uses; anything that is not found is left as Ola draws it. */
 function brand(map: maplibregl.Map) {
+  const paint = (id: string, prop: string, value: string) => { try { if (map.getLayer(id)) map.setPaintProperty(id, prop, value); } catch { /* keep Ola's colour */ } };
+  const hide = (id: string) => { try { if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", "none"); } catch { /* keep it */ } };
   try {
-    for (const layer of map.getStyle().layers || []) {
-      const id = layer.id.toLowerCase();
-      if (layer.type === "background") map.setPaintProperty(layer.id, "background-color", "#f8f3f1");
-      else if (layer.type === "fill" && /(^|[-_ ])water($|[-_ ])/.test(id)) map.setPaintProperty(layer.id, "fill-color", "#cfe2ea");
-    }
-  } catch { /* the style does not allow it: keep Ola's own colours */ }
+    paint("background", "background-color", "#f8f3f1");
+    paint("water", "fill-color", "#cfe2ea");
+    for (const id of ["waterway_river", "waterway_other", "waterway_tunnel"]) paint(id, "line-color", "#cfe2ea");
+    for (const id of ["park", "landcover_grass", "landcover_wood"]) paint(id, "fill-color", "#e3efdc");
+    for (const layer of map.getStyle().layers || []) if (/^poi/.test(layer.id) || layer.id === "ola-pois" || layer.id === "3d_model_data") hide(layer.id);
+  } catch { /* the style does not allow it: keep Ola's own look */ }
 }
 
 export function NearbyVendorsMapOla({
@@ -69,17 +73,25 @@ export function NearbyVendorsMapOla({
     });
     map.touchZoomRotate.disableRotation();
     let loaded = false;
-    map.once("error", (e) => { if (!loaded) { console.warn("Ola map could not load, using the standard map", (e as { error?: Error }).error?.message); latest.current.onFail(); } });
+    // Style warnings (a layer without data) are normal and the map still draws. Only a refused or unreachable
+    // service, or a map that never finishes loading, switches to the standard map.
+    const giveUp = (why: string) => { if (loaded) return; loaded = true; console.warn("Ola map could not load, using the standard map:", why); latest.current.onFail(); };
+    map.on("error", (e) => {
+      const err = (e as { error?: Error & { status?: number } }).error;
+      if (err?.status === 401 || err?.status === 403 || err?.status === 429) giveUp(`the service answered ${err.status}`);
+    });
+    const timer = window.setTimeout(() => giveUp("it took too long"), 20_000);
     map.on("load", () => {
-      loaded = true; brand(map);
+      if (loaded) return; loaded = true; window.clearTimeout(timer); brand(map);
       map.addSource("sp-radius", { type: "geojson", data: circle(customerLat, customerLng, latest.current.radiusKm) });
       map.addLayer({ id: "sp-radius-fill", type: "fill", source: "sp-radius", paint: { "fill-color": "#c62653", "fill-opacity": 0.08 } });
       map.addLayer({ id: "sp-radius-line", type: "line", source: "sp-radius", paint: { "line-color": "#c62653", "line-width": 2 } });
       setReady(true);
     });
+    map.on("styleimagemissing", (e) => { if (!map.hasImage(e.id)) map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) }); });
     map.on("zoomend", () => setZoom(Math.round(toTile(map.getZoom()))));
     mapRef.current = map;
-    return () => { map.remove(); mapRef.current = null; setReady(false); };
+    return () => { window.clearTimeout(timer); map.remove(); mapRef.current = null; setReady(false); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [access.base, access.style]);
 

@@ -10,6 +10,15 @@ const TOKEN_URL = () => process.env.OLA_TOKEN_URL || "https://account.olamaps.io
 export const olaConfigured = () => Boolean(process.env.OLA_MAPS_API_KEY || (process.env.OLA_MAPS_CLIENT_ID && process.env.OLA_MAPS_CLIENT_SECRET) || process.env.NEXT_PUBLIC_OLA_MAPS_API_KEY);
 export const olaApiBase = API_BASE;
 
+function secondsLeft(jwt: string): number {
+  try {
+    const part = jwt.split(".")[1]; const claims = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=")));
+    const left = Number(claims.exp) - Math.floor(Date.now() / 1000);
+    if (Number.isFinite(left) && left > 0) return left;
+  } catch { /* not a readable token */ }
+  return 300; // unknown: refresh early
+}
+
 let cached: { token: string; expiresAt: number } | null = null;
 let inflight: Promise<{ token: string; expiresIn: number }> | null = null;
 
@@ -27,7 +36,8 @@ export async function olaAccessToken(): Promise<{ token: string; expiresIn: numb
     if (!res.ok) throw new Error(`Ola Maps sign-in failed (${res.status})`);
     const json = await res.json() as { access_token?: string; expires_in?: number };
     if (!json.access_token) throw new Error("Ola Maps sign-in returned no token");
-    const expiresIn = Number(json.expires_in) > 0 ? Number(json.expires_in) : 600;
+    // Ola's reply carries only the token; its lifetime is the "exp" claim inside it (about an hour)
+    const expiresIn = Number(json.expires_in) > 0 ? Number(json.expires_in) : secondsLeft(json.access_token);
     cached = { token: json.access_token, expiresAt: Date.now() + expiresIn * 1000 };
     return { token: json.access_token, expiresIn };
   })().finally(() => { inflight = null; });
@@ -80,11 +90,20 @@ export async function olaAutocomplete(input: string, near?: { lat: number; lng: 
   }
   return out;
 }
-export async function olaGeocode(address: string): Promise<OlaPlace | null> {
+/** Share of the typed words (3+ letters) that appear in a result: Ola's geocoder can return a far-away place with a similar name. */
+function wordMatch(typed: string, found: string): number {
+  const words = typed.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+  if (!words.length) return 1;
+  const hay = found.toLowerCase();
+  return words.filter((w) => hay.includes(w)).length / words.length;
+}
+export async function olaGeocode(address: string, near?: { lat: number; lng: number }): Promise<OlaPlace | null> {
   const raw = await olaGet("/places/v1/geocode", { address }) as Loose;
   const list = (Array.isArray(raw.geocodingResults) ? raw.geocodingResults : Array.isArray(raw.results) ? raw.results : []) as Loose[];
-  for (const item of list) { const p = toPlace(item); if (p) return p; }
-  return null;
+  for (const item of list) { const p = toPlace(item); if (p && wordMatch(address, p.address) >= 0.6) return p; }
+  // nothing in the geocoder matched what was typed: the best address suggestion is a safer answer than a far-away namesake
+  const suggestions = await olaAutocomplete(address, near);
+  return suggestions.find((p) => wordMatch(address, p.address) >= 0.6) || suggestions[0] || null;
 }
 export async function olaReverseGeocode(lat: number, lng: number): Promise<OlaPlace | null> {
   const raw = await olaGet("/places/v1/reverse-geocode", { latlng: `${lat},${lng}` }) as Loose;
