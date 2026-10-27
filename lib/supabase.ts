@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { uniqueById } from "./connect-map";
 import type { Role } from "./sheplates-data";
+import { nextFoodDropWindow } from "./food-drops";
 
 let browserClient: SupabaseClient | null = null;
 
@@ -140,6 +141,45 @@ export async function saveLiveCustomerPrivacy(privateAccount: boolean) {
 export async function liveSignOut() {
   const supabase = getSupabaseBrowserClient();
   if (supabase) await supabase.auth.signOut();
+}
+
+export function getAppUrl() {
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  return process.env.NEXT_PUBLIC_APP_URL || "http://localhost:5173";
+}
+
+export async function sendPasswordResetEmail(email: string, redirectTo?: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to send password reset emails.");
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("Enter a valid email address.");
+  }
+  const defaultRedirect = `${getAppUrl().replace(/\/$/, "")}/reset-password`;
+  const targetRedirect = redirectTo || defaultRedirect;
+  const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+    redirectTo: targetRedirect,
+  });
+  // Do NOT surface Supabase errors (rate limit, user not found, etc.) to the UI.
+  // For security and UX, always show the success banner so we don't leak whether
+  // an account exists for a given email, and so transient limits don't confuse users.
+  void error;
+  return { success: true, email: normalizedEmail };
+}
+
+export async function updatePassword(newPassword: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local to update passwords.");
+  if (!newPassword || newPassword.length < 8) {
+    throw new Error("Use a password with at least 8 characters.");
+  }
+  const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) {
+    throw new Error(error.message || "Could not update your password. The reset link may have expired or is invalid.");
+  }
+  return data;
 }
 
 export async function getAccessToken() {
@@ -665,7 +705,7 @@ export async function syncLiveCart(input: { items: Array<{ productId: string; qu
   return commerceRequest({ action: "sync_cart", items: input.items, createdBy: input.createdBy || "customer" });
 }
 
-export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string }) {
+export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string; deliveryAddress?: string }) {
   return commerceRequest({ action: "checkout_cart", ...(input || {}) });
 }
 
@@ -779,7 +819,8 @@ function mapFoodDropRow(row: FoodDropRow): import("@/lib/food-drops").FoodDrop {
 }
 const FOOD_DROP_COLUMNS = "id,vendor_id,product_id,title,description,drop_price,original_price,total_quantity,remaining_quantity,starts_at,ends_at,status";
 
-/** Marketplace-facing: only drops a customer could plausibly still claim.
+/** Marketplace-facing: active drops remain visible between daily windows so
+ * customers can see what is scheduled for 8 PM.
  * Returns null (not []) when the list couldn't be fetched, so callers keep
  * what they already have instead of blanking the screen on a network error. */
 export async function loadLiveFoodDrops(): Promise<import("@/lib/food-drops").FoodDrop[] | null> {
@@ -787,7 +828,7 @@ export async function loadLiveFoodDrops(): Promise<import("@/lib/food-drops").Fo
   if (!isLiveSupabaseMode()) return null;
   const supabase = getSupabaseBrowserClient();
   if (!supabase) return null;
-  const result = await supabase.from("food_drops").select(FOOD_DROP_COLUMNS).eq("status", "active").gt("ends_at", new Date().toISOString()).order("ends_at", { ascending: true });
+  const result = await supabase.from("food_drops").select(FOOD_DROP_COLUMNS).eq("status", "active").order("ends_at", { ascending: true });
   if (result.error || !result.data) return null;
   return (result.data as FoodDropRow[]).map(mapFoodDropRow);
 }
@@ -804,15 +845,16 @@ export async function loadLiveVendorFoodDrops(vendorId: string): Promise<import(
 
 export async function createLiveFoodDrop(input: {
   vendorId: string; productId: string; title: string; description?: string;
-  dropPrice: number; originalPrice: number; totalQuantity: number; startsAt: string; endsAt: string;
+  dropPrice: number; originalPrice: number; totalQuantity: number;
 }): Promise<import("@/lib/food-drops").FoodDrop> {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const { startsAt, endsAt } = nextFoodDropWindow();
   const result = await supabase.from("food_drops").insert({
     vendor_id: input.vendorId, product_id: input.productId, title: input.title, description: input.description || null,
     drop_price: input.dropPrice, original_price: input.originalPrice,
     total_quantity: input.totalQuantity, remaining_quantity: input.totalQuantity,
-    starts_at: input.startsAt, ends_at: input.endsAt,
+    starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString(),
   }).select(FOOD_DROP_COLUMNS).single();
   if (result.error || !result.data) throw result.error || new Error("Drop could not be created");
   return mapFoodDropRow(result.data as FoodDropRow);
@@ -826,8 +868,8 @@ export async function cancelLiveFoodDrop(dropId: string): Promise<void> {
 }
 
 /** The only write path for a claim — a thin wrapper around the atomic
- * claim_food_drop() RPC. Throws with Postgres's own message ("sold out, has
- * ended, or is no longer available") on any race/expiry/capacity failure so
+ * claim_food_drop() RPC. Throws with Postgres's own message on any race,
+ * closed-window, expiry, or capacity failure so
  * the caller can show it directly rather than trusting local stock math. */
 export async function claimLiveFoodDrop(dropId: string, quantity: number): Promise<import("@/lib/food-drops").FoodDropClaim> {
   const supabase = getSupabaseBrowserClient();

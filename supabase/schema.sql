@@ -193,6 +193,7 @@ create table public.orders (
   tax_amount numeric(12,2) not null default 0,
   delivery_fee numeric(12,2) not null default 0,
   customer_total numeric(12,2) not null,
+  delivery_address text,
   fulfilment_mode text not null check (fulfilment_mode in ('vendor_delivery','self_pickup')),
   scheduled_date date not null check (scheduled_date > current_date),
   scheduled_slot text not null,

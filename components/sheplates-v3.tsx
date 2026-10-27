@@ -2,7 +2,7 @@
 /* eslint-disable @next/next/no-img-element */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type * as React from "react";
 import {
@@ -52,7 +52,7 @@ import {
   type TasteWeights, type TasteSignal,
 } from "@/lib/taste-match";
 import {
-  dropDisplayStatus, discountPercent, claimedPercent, formatCountdown,
+  dropDisplayStatus, discountPercent, claimedPercent, formatCountdown, foodDropSchedule,
   type FoodDrop, type FoodDropClaim,
 } from "@/lib/food-drops";
 import { useSocial } from "@/lib/social";
@@ -72,7 +72,7 @@ import { usePeople, type PeopleApi } from "@/lib/people";
 import { useStatuses } from "@/lib/statuses";
 import { useFoodShorts, type FoodShort, type ShortsApi } from "@/lib/food-shorts";
 import { ProfileTab, VendorProfileDialog } from "@/components/customer-v2/profile";
-import { shortArea } from "@/components/customer-v2/kit";
+import { shortArea, useTicker } from "@/components/customer-v2/kit";
 
 function CategoryBadge({ name, className = "size-5" }: { name: string; className?: string }) {
   const { Icon, fg } = categoryVisual(name);
@@ -141,7 +141,7 @@ type Schedule = {
 };
 type Order = {
   id: string; scheduleId?: string; customerEmail: string; vendorId: string; productId?: string;
-  description: string; quantity: number; unit: string; total: number; date: string; slot: string;
+  description: string; quantity: number; unit: string; total: number; date: string; slot: string; deliveryAddress?: string;
   mode: DeliveryMode; status: "Scheduled" | "Confirmed" | "Preparing" | "Ready" | "Out for delivery" | "Ready for pickup" | "Completed" | "Cancellation requested" | "Cancelled";
   payment: "Pending" | "Paid" | "Reversal pending" | "Refunded";
   trackingLatitude?: number; trackingLongitude?: number; cancellationFee?: number;
@@ -341,10 +341,13 @@ const nav: Record<Role, string[]> = {
   vendor: ["Dashboard", "AI insights", "Online shop & POS", "Store & radius", "Verification", "Catalog", "Food Drops", "Food Shorts", "Quote opportunities", "Orders", "Delivery team", "People followers", "Settlements", "Ticket centre"],
   operations: ["Command centre", "AI insights", "P0 Connect vendors", "Vendor onboarding", "Vendor verification", "Store & radius", "Item pricing", "RFQ desk", "Orders", "Vendor payments", "Reports", "Ticket centre"],
   admin: ["Executive view", "AI insights", "Homepage & campaigns", "Users", "P0 Connect vendors", "Vendors", "Vendor plans", "Pricing policies", "Vendor payments", "Reports", "Ticket centre", "Audit log"],
+  vendor: ["Dashboard", "AI insights", "Online shop & POS", "Store & radius", "Verification", "Catalog", "Food Drops", "Food Shorts", "Quote opportunities", "Orders", "Delivery team", "Vendor workspace", "Settlements", "Ticket centre", "People followers"],
+  operations: ["Command centre", "AI insights", "Vendor onboarding", "Vendor verification", "Store & radius", "Item pricing", "RFQ desk", "Orders", "Vendor payments", "Reports", "Ticket centre"],
+  admin: ["Executive view", "AI insights", "Homepage & campaigns", "Users", "Vendors", "Vendor plans", "Pricing policies", "Vendor payments", "Reports", "Ticket centre", "Audit log"],
 };
 const navIcons: Record<string, typeof Store> = {
   Marketplace: ShoppingBag, Cart: ShoppingCart, Wishlist: Heart, "My schedule": CalendarDays, "Monthly requirement": ListChecks, "My quotations": ClipboardCheck,
-  Orders: Package, "Profile & food": HeartPulse, Dashboard: LayoutDashboard, "Store & radius": MapPin, "People followers": Users,
+  Orders: Package, "Profile & food": HeartPulse, Dashboard: LayoutDashboard, "Vendor workspace": LayoutDashboard, "Store & radius": MapPin, "People followers": Users,
   Verification: BadgeCheck, Catalog: ShoppingBag, "Online shop & POS": Building2, "Food Drops": Zap, "Food Shorts": Clapperboard, "Quote opportunities": ClipboardCheck, "Delivery team": Truck,
   "Command centre": LayoutDashboard, "Vendor onboarding": UserPlus, "Vendor verification": FileCheck2,
   "P0 Connect vendors": MapPinned,
@@ -576,6 +579,7 @@ function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot
       description: items.length ? items.map((item) => String(item.product_name || "Item")).join(", ") : String(row.order_number || "Order"),
       quantity: Number(first?.quantity || items.length || 1), unit: String(first?.unit || "items"), total: Number(row.customer_total || 0),
       date: String(row.scheduled_date || ""), slot: String(row.scheduled_slot || "Vendor to confirm"),
+      deliveryAddress: typeof row.delivery_address === "string" ? row.delivery_address : undefined,
       mode: String(row.fulfilment_mode) === "self_pickup" ? "Self pickup" : "Vendor delivery",
       status: liveOrderStatus(row.status), payment: livePaymentStatus(row.payments, row.status),
       trackingLatitude: row.tracking_latitude == null ? undefined : Number(row.tracking_latitude),
@@ -1065,7 +1069,7 @@ export function ShePlatesV3() {
       {content}
       {!notificationsOpen && <CustomerBottomNav active={active} onNavigate={(key) => { setActive(key); setCustomerMenuOpen(false); }} onAgent={() => setAgentOpen(true)} />}
       {customerMenuOpen && <button className="fixed inset-0 z-30 hidden md:block" onClick={() => setCustomerMenuOpen(false)} aria-label="Close account menu" />}
-      <VendorProfileDialog vendorId={vendorProfileId} onClose={() => setVendorProfileId(null)} state={state} social={social} profile={{ latitude: customer?.latitude, longitude: customer?.longitude, address: customer?.address }} onAdd={(product) => void addProductToCart(state, setState, session, product)} onPlan={(product) => setPlanProduct(product)} onClaimDrop={claimDrop} shorts={vendorProfileId ? shorts.forVendor(vendorProfileId, 30) : []} onOpenShorts={openShorts} />
+      <VendorProfileDialog vendorId={vendorProfileId} onClose={() => setVendorProfileId(null)} state={state} social={social} profile={{ latitude: customer?.latitude, longitude: customer?.longitude, address: customer?.address }} onAdd={(product) => { void addProductToCart(state, setState, session, product); setVendorProfileId(null); setActive("Cart"); }} onPlan={(product) => setPlanProduct(product)} onClaimDrop={claimDrop} shorts={vendorProfileId ? shorts.forVendor(vendorProfileId, 30) : []} onOpenShorts={openShorts} />
       {shortsViewer.state && <ShortsViewer shorts={shortsViewer.state.shorts} startIndex={shortsViewer.state.start} liked={shorts.liked} onLike={(id) => void shorts.toggleLike(id).catch((e) => toast.error(e instanceof Error ? e.message : "Could not save your like"))} onView={shorts.recordView} onOpenVendor={setVendorProfileId} onClose={shortsViewer.close} />}
       <ScheduleDialog product={planProduct} close={() => setPlanProduct(null)} session={session} state={state} setState={setState} initialStartDate={tomorrow()} onCreated={() => { setVendorProfileId(null); setActive("Cart"); }} />
     </main> : <div className="mx-auto flex max-w-425 gap-0 lg:gap-4">
@@ -1216,7 +1220,7 @@ function CustomerOnboarding({ session, onSave, onLogout }: { session: DemoSessio
 
 function ChoiceGroup({ label, options, value, setValue }: { label: string; options: string[]; value: string[]; setValue: (next: string[]) => void }) { return <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">{label}</div><div className="flex flex-wrap gap-2">{options.map((option) => <button type="button" key={option} onClick={() => setValue(value.includes(option) ? value.filter((x) => x !== option) : [...value, option])} className={`rounded-full border px-3 py-2 text-sm font-bold ${value.includes(option) ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : "bg-white text-stone-500"}`}>{option}</button>)}</div></div>; }
 function Review({ label, value }: { label: string; value: string }) { return <div className="sp-review flex min-w-0 justify-between gap-4 border-b border-stone-200/70 pb-3 last:border-0 last:pb-0"><span className="shrink-0 text-stone-500">{label}</span><b className="min-w-0 wrap-break-word text-right">{value}</b></div>; }
-function OrderDetail({ label, value }: { label: string; value: string }) { return <div className="flex min-h-18 min-w-0 flex-col gap-1 rounded-xl bg-stone-50 px-3 py-2.5"><span className="text-xs font-bold text-stone-500">{label}</span><b className="min-w-0 wrap-break-word text-left text-sm leading-5">{value}</b></div>; }
+function OrderDetail({ label, value }: { label: string; value: React.ReactNode }) { return <div className="flex h-full min-h-20 min-w-0 flex-col items-start gap-2 rounded-2xl border border-stone-100 bg-stone-50/80 px-3.5 py-3"><span className="text-[11px] font-black uppercase tracking-wide text-stone-500">{label}</span><b className="min-w-0 w-full wrap-break-word text-left text-sm leading-5 text-stone-800">{value}</b></div>; }
 
 function VendorOnboarding({ session, setState, onLogout, operationsCreated = false, close }: { session: DemoSession; setState: React.Dispatch<React.SetStateAction<V3State>>; onLogout?: () => void; operationsCreated?: boolean; close?: () => void }) {
   const [step, setStep] = useState(1), [locating, setLocating] = useState(false), [mapBusy, setMapBusy] = useState(false), [file, setFile] = useState<File | null>(null), [busy, setBusy] = useState(false);
@@ -1601,7 +1605,7 @@ function ScheduleDialog({ product, close, session, state, setState, initialStart
     } catch (error) { toast.error(error instanceof Error ? error.message : "Schedule could not be saved"); }
   }
 
-  return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="max-h-[94vh] overflow-y-auto rounded-[28px] p-0 sm:max-w-5xl"><div className="border-b bg-[#111611] p-6 text-white"><DialogHeader><DialogTitle className="flex items-center gap-3 text-lg font-black"><span className="grid size-11 place-items-center rounded-xl bg-[#5ba400]"><CalendarDays /></span>Schedule {product.name}</DialogTitle><DialogDescription className="text-white/60">Choose the actual delivery period, repeat pattern, time and pack quantity.</DialogDescription></DialogHeader></div><div className="grid gap-0 lg:grid-cols-[1.2fr_.8fr]"><div className="space-y-6 p-6"><div className="grid gap-4 sm:grid-cols-2"><Field label="Starts"><input type="date" min={tomorrow()} value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputClass} /></Field><Field label="Ends (optional)"><input type="date" min={startDate || tomorrow()} value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputClass} /></Field></div><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Repeat</div><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{(["Once", "Daily", "Weekly", "Custom"] as const).map((item) => <button key={item} type="button" onClick={() => setRecurrence(item)} className={`rounded-xl border p-3 text-sm font-black ${recurrence === item ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : ""}`}>{item}</button>)}</div></div>{recurrence === "Custom" && <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Delivery days</div><div className="flex flex-wrap gap-2">{weekdays.map((day) => <button type="button" key={day} onClick={() => setDays(days.includes(day) ? days.filter((x) => x !== day) : [...days, day])} className={`grid size-11 place-items-center rounded-full border text-xs font-black ${days.includes(day) ? "border-[#5ba400] bg-[#5ba400] text-white" : ""}`}>{day}</button>)}</div></div>}<Field label="Preferred time"><Select value={slot} onValueChange={setSlot}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{["06:00–07:00 AM", "07:00–08:00 AM", "08:00–09:00 AM", "12:00–01:00 PM", "05:00–06:00 PM", "07:00–08:00 PM"].map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Number of packs per delivery</div><div className="flex flex-wrap items-center gap-3"><Button variant="outline" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="size-11 rounded-xl">−</Button><div className="min-w-40 rounded-2xl border border-stone-200/80 bg-white/90 px-4 py-3 text-center text-base font-black shadow-sm">{quantity} × {product.baseUnit}</div><Button variant="outline" onClick={() => setQuantity(quantity + 1)} className="size-11 rounded-xl">+</Button></div></div><Field label="Fulfilment"><Select value={modes.includes(mode) ? mode : modes[0]} onValueChange={(v) => setMode(v as DeliveryMode)}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{modes.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div className="rounded-2xl bg-[#f6f8f2] p-4"><div className="text-xs font-black uppercase tracking-widest text-stone-500">Delivery dates</div><div className="mt-2 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">{deliveryDates.slice(0, 60).map((date) => <span key={date} className="rounded-full border bg-white px-2.5 py-1 text-xs font-bold">{new Date(`${date}T12:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>)}{deliveryDates.length > 60 && <span className="px-2 py-1 text-xs text-stone-500">+{deliveryDates.length - 60} more</span>}</div></div></div><div className="bg-[#f5f7f1] p-6"><div className="surface-card rounded-3xl p-5"><div className="grid size-16 place-items-center rounded-2xl" style={{ background: categoryVisual(product.category).bg }}><ProductGlyph category={product.category} iconClassName="size-8" /></div><h3 className="mt-4 text-xl font-black">{product.name}</h3><p className="text-sm text-stone-500">{vendor.businessName} · {product.baseUnit}</p><div className="mt-5 space-y-3 text-sm"><Review label="Frequency" value={recurrence} /><Review label="Confirmed delivery dates" value={String(occurrences)} />{hasNutrition ? <Review label="Calories (all planned packs)" value={`${calories.toLocaleString("en-IN")} kcal`} /> : <Review label="Nutrition" value="Pending review" />}<Review label="Per delivery" value={money(perDelivery)} /><Review label="Total to activate schedule" value={money(price)} /></div><div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">The schedule remains in checkout until payment. After payment, all confirmed delivery dates appear in My Schedule and Orders, and the vendor receives the order.</div><Button onClick={save} className="mt-5 h-12 w-full rounded-xl bg-[#ef3d3d] font-black hover:bg-[#d92f2f]"><CreditCard />Continue to payment</Button></div></div></div></DialogContent></Dialog>;
+  return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="max-h-[94vh] overflow-y-auto rounded-[28px] p-0 sm:max-w-5xl"><div className="border-b bg-[#111611] p-6 text-white"><DialogHeader><DialogTitle className="flex items-center gap-3 text-lg font-black"><span className="grid size-11 place-items-center rounded-xl bg-[#5ba400]"><CalendarDays /></span>Schedule {product.name}</DialogTitle><DialogDescription className="text-white/60">Choose the exact first delivery date, delivery period, repeat pattern, time and pack quantity.</DialogDescription></DialogHeader></div><div className="grid gap-0 lg:grid-cols-[1.2fr_.8fr]"><div className="space-y-6 p-6"><div className="grid gap-4 sm:grid-cols-2"><Field label={recurrence === "Once" ? "Delivery date" : "First delivery date"}><input aria-label={recurrence === "Once" ? "Delivery date" : "First delivery date"} type="date" min={tomorrow()} value={startDate} onChange={(e) => { const nextDate = e.target.value; setStartDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} className={inputClass} /></Field><Field label="Ends (optional)"><input type="date" min={startDate || tomorrow()} value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputClass} /></Field></div><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Repeat</div><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{(["Once", "Daily", "Weekly", "Custom"] as const).map((item) => <button key={item} type="button" onClick={() => setRecurrence(item)} className={`rounded-xl border p-3 text-sm font-black ${recurrence === item ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : ""}`}>{item}</button>)}</div></div>{recurrence === "Custom" && <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Delivery days</div><div className="flex flex-wrap gap-2">{weekdays.map((day) => <button type="button" key={day} onClick={() => setDays(days.includes(day) ? days.filter((x) => x !== day) : [...days, day])} className={`grid size-11 place-items-center rounded-full border text-xs font-black ${days.includes(day) ? "border-[#5ba400] bg-[#5ba400] text-white" : ""}`}>{day}</button>)}</div></div>}<Field label="Preferred time"><Select value={slot} onValueChange={setSlot}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{["06:00–07:00 AM", "07:00–08:00 AM", "08:00–09:00 AM", "12:00–01:00 PM", "05:00–06:00 PM", "07:00–08:00 PM"].map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Number of packs per delivery</div><div className="flex flex-wrap items-center gap-3"><Button variant="outline" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="size-11 rounded-xl">−</Button><div className="min-w-40 rounded-2xl border border-stone-200/80 bg-white/90 px-4 py-3 text-center text-base font-black shadow-sm">{quantity} × {product.baseUnit}</div><Button variant="outline" onClick={() => setQuantity(quantity + 1)} className="size-11 rounded-xl">+</Button></div></div><Field label="Fulfilment"><Select value={modes.includes(mode) ? mode : modes[0]} onValueChange={(v) => setMode(v as DeliveryMode)}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{modes.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div className="rounded-2xl bg-[#f6f8f2] p-4"><div className="text-xs font-black uppercase tracking-widest text-stone-500">Delivery dates</div><div className="mt-2 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">{deliveryDates.slice(0, 60).map((date) => <span key={date} className="rounded-full border bg-white px-2.5 py-1 text-xs font-bold">{new Date(`${date}T12:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>)}{deliveryDates.length > 60 && <span className="px-2 py-1 text-xs text-stone-500">+{deliveryDates.length - 60} more</span>}</div></div></div><div className="bg-[#f5f7f1] p-6"><div className="surface-card rounded-3xl p-5"><div className="grid size-16 place-items-center rounded-2xl" style={{ background: categoryVisual(product.category).bg }}><ProductGlyph category={product.category} iconClassName="size-8" /></div><h3 className="mt-4 text-xl font-black">{product.name}</h3><p className="text-sm text-stone-500">{vendor.businessName} · {product.baseUnit}</p><div className="mt-5 space-y-3 text-sm"><Review label="Frequency" value={recurrence} /><Review label="Confirmed delivery dates" value={String(occurrences)} />{hasNutrition ? <Review label="Calories (all planned packs)" value={`${calories.toLocaleString("en-IN")} kcal`} /> : <Review label="Nutrition" value="Pending review" />}<Review label="Per delivery" value={money(perDelivery)} /><Review label="Total to activate schedule" value={money(price)} /></div><div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">The schedule remains in checkout until payment. After payment, all confirmed delivery dates appear in My Schedule and Orders, and the vendor receives the order.</div><Button onClick={save} className="mt-5 h-12 w-full rounded-xl bg-[#ef3d3d] font-black hover:bg-[#d92f2f]"><CreditCard />Continue to payment</Button></div></div></div></DialogContent></Dialog>;
 }
 function WishlistView({ session, state, setState }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
   const items = state.wishlist.filter((w) => w.customerEmail === session.email);
@@ -1655,9 +1659,18 @@ function CustomerProfileView({ session, state, setState }: { session: DemoSessio
 
 function CartView({ session, state, setState, navigate }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; navigate: (page: string) => void }) {
   const items = state.cart.filter((item) => item.customerEmail === session.email);
+  const customer = state.customers.find((item) => item.email === session.email);
+  const savedAddresses = customer?.addresses?.length
+    ? customer.addresses
+    : customer?.address ? [{ id: "default-address", label: "Home", address: customer.address, latitude: customer.latitude, longitude: customer.longitude, isDefault: true }] : [];
   const pendingOrders = state.orders.filter((item) => item.customerEmail === session.email && item.payment === "Pending" && item.status !== "Cancelled");
   const [paying, setPaying] = useState<Order | null>(null);
   const [savingCart, setSavingCart] = useState(false);
+  const [addressDialogOpen, setAddressDialogOpen] = useState(false);
+  const [deliveryDate, setDeliveryDate] = useState(tomorrow());
+  const [selectedAddressId, setSelectedAddressId] = useState(savedAddresses.find((address) => address.isDefault)?.id || savedAddresses[0]?.id || "");
+  const [newAddress, setNewAddress] = useState("");
+  const [useNewAddress, setUseNewAddress] = useState(false);
   const total = items.reduce((sum, item) => { const product = state.products.find((x) => x.id === item.productId); return sum + (product ? finalPrice(product, state) * item.quantity : 0); }, 0);
   const singlePendingOrder = pendingOrders.length === 1 ? pendingOrders[0] : null;
   useEffect(() => { if (!paying && singlePendingOrder) queueMicrotask(() => setPaying(singlePendingOrder)); }, [paying, singlePendingOrder]);
@@ -1686,14 +1699,23 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
     try { await persistOwnCart(nextOwn); toast.success("Item removed from cart"); } catch { /* toast handled above */ }
   }
 
-  async function confirm() {
+  async function confirm(deliveryAddress: string) {
     if (!items.length || savingCart) return;
+    if (!deliveryDate || deliveryDate < tomorrow()) {
+      toast.error("Choose a delivery date from tomorrow onward.");
+      return;
+    }
+    const address = deliveryAddress.trim();
+    if (!address) {
+      toast.error("Choose a saved delivery address or enter a new one.");
+      return;
+    }
     if (isLiveSupabaseMode()) {
       setSavingCart(true);
       try {
         // Sync first so carts created on another device / older build are reconciled before checkout.
         await syncLiveCart({ items: items.map((item) => ({ productId: item.productId, quantity: item.quantity })) });
-        const result = await checkoutLiveCart({ scheduledDate: tomorrow(), slot: "07:00–08:00 AM" });
+        const result = await checkoutLiveCart({ scheduledDate: deliveryDate, slot: "07:00–08:00 AM", deliveryAddress: address });
         const snapshot = result.snapshot as LiveCommerceStateSnapshot | undefined;
         if (!snapshot) throw new Error("Checkout did not return the latest order state.");
         const next = mergeLiveCommerce(state, snapshot, session);
@@ -1702,19 +1724,49 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
         const createdOrders = next.orders.filter((order) => ids.includes(order.id) && order.payment === "Pending");
         if (createdOrders.length === 1) setPaying(createdOrders[0]);
         toast.success(createdOrders.length > 1 ? `${createdOrders.length} vendor checkouts are ready for payment.` : "Checkout is ready for payment.");
+        setAddressDialogOpen(false);
       } catch (error) { toast.error(error instanceof Error ? error.message : "Checkout could not be created"); }
       finally { setSavingCart(false); }
       return;
     }
     const first = state.products.find((x) => x.id === items[0].productId); if (!first) return;
     const vendor = state.vendors.find((x) => x.id === first.vendorId);
-    const order: Order = { id: id("ORD"), customerEmail: session.email, vendorId: first.vendorId, description: items.map((item) => state.products.find((x) => x.id === item.productId)?.name).filter(Boolean).join(", "), quantity: items.reduce((sum, x) => sum + x.quantity, 0), unit: "packs", total, date: tomorrow(), slot: "07:00–08:00 AM", mode: vendor?.delivery ? "Vendor delivery" : "Self pickup", status: "Scheduled", payment: "Pending", cancellationFee: 0 };
+    const order: Order = { id: id("ORD"), customerEmail: session.email, vendorId: first.vendorId, description: items.map((item) => state.products.find((x) => x.id === item.productId)?.name).filter(Boolean).join(", "), quantity: items.reduce((sum, x) => sum + x.quantity, 0), unit: "packs", total, date: deliveryDate, slot: "07:00–08:00 AM", deliveryAddress: address, mode: vendor?.delivery ? "Vendor delivery" : "Self pickup", status: "Scheduled", payment: "Pending", cancellationFee: 0 };
     setState((current) => ({ ...current, orders: [order, ...current.orders], cart: current.cart.filter((item) => item.customerEmail !== session.email), notifications: [notice(session.email, "customer", "Checkout ready", `${order.description} is ready for payment.`), ...current.notifications] }));
+    setAddressDialogOpen(false);
     setPaying(order);
   }
-  return <div className="space-y-6"><Heading eyebrow="CHECKOUT" title="Your cart" body="Your basket is saved with your account. She Agent, Marketplace and Cart all use the same basket, including when you switch devices." />
+  function continueWithAddress() {
+    const chosen = useNewAddress ? newAddress.trim() : savedAddresses.find((address) => address.id === selectedAddressId)?.address || "";
+    void confirm(chosen);
+  }
+  return <div className="space-y-6"><Heading eyebrow="CHECKOUT" title="Your Cart" body="Your basket is saved with your account. She Agent, Marketplace and Cart all use the same basket, including when you switch devices." />
+    <div><h2 className="text-lg font-black">Plan Your Order, Your Way!</h2><p className="mt-1 text-sm text-stone-500">Choose your Preferred delivery date and schedule your order in advance...</p></div>
     {pendingOrders.length > 0 && <div className="space-y-3"><h3 className="text-lg font-black">Awaiting payment</h3>{pendingOrders.map((order) => <div key={order.id} className="surface-card flex flex-col gap-4 rounded-3xl border-l-4 border-l-amber-400 p-5 transition hover:-translate-y-0.5 hover:shadow-md sm:flex-row sm:items-center"><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-amber-50 text-amber-600"><Clock3 className="size-5" /></div><div className="min-w-0 flex-1"><b>{order.description}</b><div className="mt-1 text-sm text-stone-500">{order.date} · {order.slot} · {order.mode}</div><div className="mt-2 text-xl font-black">{money(order.total)}</div></div><Button onClick={() => setPaying(order)} className="rounded-xl bg-[#5ba400] transition hover:-translate-y-0.5 hover:shadow-lg"><CreditCard />Pay & place order</Button></div>)}</div>}
-    {items.length ? <div className="grid gap-5 lg:grid-cols-[1fr_340px]"><div className="space-y-3">{items.map((item) => { const product = state.products.find((x) => x.id === item.productId); if (!product) return null; return <div key={item.id} className="surface-card flex flex-wrap items-center gap-3 rounded-[22px] p-4 transition hover:-translate-y-0.5 hover:shadow-md sm:flex-nowrap sm:gap-4"><div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-35 flex-1"><b>{product.name}</b><div className="text-xs text-stone-500">{product.baseUnit} · {money(finalPrice(product, state))} each</div></div><div className="ml-auto flex items-center gap-2"><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, -1)}>−</Button><b className="min-w-6 text-center">{item.quantity}</b><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, 1)}>+</Button><button disabled={savingCart} onClick={() => void removeItem(item)} className="grid size-9 place-items-center rounded-xl hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button></div></div>; })}</div><div className="surface-dark h-fit rounded-[28px] p-6 text-white lg:sticky lg:top-6"><h3 className="text-xl font-black">Review basket</h3><Review label="Products" value={String(items.length)} /><Review label="Delivery" value={tomorrow()} /><Review label="Estimated total" value={money(total)} /><Button disabled={savingCart} onClick={() => void confirm()} className="mt-5 w-full rounded-xl bg-[#ef3d3d]"><CreditCard />{savingCart ? "Saving…" : "Continue to payment"}</Button></div></div> : pendingOrders.length === 0 ? <Empty icon={ShoppingCart} title="Your cart is empty" body="Ask She Agent to add products or add them from the marketplace. The same saved basket appears everywhere." /> : null}
+    {items.length ? <div className="grid gap-5 lg:grid-cols-[1fr_340px]"><div className="space-y-3">{items.map((item) => { const product = state.products.find((x) => x.id === item.productId); if (!product) return null; return <div key={item.id} className="surface-card flex flex-wrap items-center gap-3 rounded-[22px] p-4 transition hover:-translate-y-0.5 hover:shadow-md sm:flex-nowrap sm:gap-4"><div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-2xl" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover" /> : <ProductGlyph category={product.category} />}</div><div className="min-w-35 flex-1"><b>{product.name}</b><div className="text-xs text-stone-500">{product.baseUnit} · {money(finalPrice(product, state))} each</div></div><div className="ml-auto flex items-center gap-2"><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, -1)}>−</Button><b className="min-w-6 text-center">{item.quantity}</b><Button disabled={savingCart} variant="outline" size="sm" onClick={() => void changeQuantity(item, 1)}>+</Button><button disabled={savingCart} onClick={() => void removeItem(item)} className="grid size-9 place-items-center rounded-xl hover:bg-red-50 hover:text-red-600"><X className="size-4" /></button></div></div>; })}</div><div className="surface-dark h-fit rounded-[28px] p-6 text-white lg:sticky lg:top-6"><h3 className="text-xl font-black">Review basket</h3><Review label="Products" value={String(items.length)} /><label className="mt-3 block text-sm font-bold text-white/70">Delivery date<input aria-label="Order delivery date" type="date" min={tomorrow()} value={deliveryDate} onChange={(event) => setDeliveryDate(event.target.value)} className={`${inputClass} mt-2 text-stone-900`} /></label><Review label="Estimated total" value={money(total)} /><Button disabled={savingCart} onClick={() => setAddressDialogOpen(true)} className="mt-5 w-full rounded-xl bg-[#ef3d3d]"><CreditCard />{savingCart ? "Saving…" : "Continue to payment"}</Button></div></div> : pendingOrders.length === 0 ? <Empty icon={ShoppingCart} title="Your cart is empty" body="Ask She Agent to add products or add them from the marketplace. The same saved basket appears everywhere." /> : null}
+    <Dialog open={addressDialogOpen} onOpenChange={setAddressDialogOpen}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto rounded-[28px] sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Choose a delivery address</DialogTitle>
+          <DialogDescription>Select a saved address or enter a new one before continuing to payment.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {savedAddresses.map((address) => (
+            <button type="button" key={address.id} aria-pressed={!useNewAddress && selectedAddressId === address.id} onClick={() => { setSelectedAddressId(address.id); setUseNewAddress(false); }} className={`w-full rounded-2xl border p-4 text-left transition ${!useNewAddress && selectedAddressId === address.id ? "border-[#5ba400] bg-[#f5faef]" : "border-stone-200 bg-white"}`}>
+              <span className="flex items-center justify-between gap-3"><span className="font-black">{address.label}{address.isDefault ? " · Default" : ""}</span><MapPin className="size-4 shrink-0 text-[#5f8f2d]" /></span>
+              <span className="mt-1 block text-sm text-stone-600">{address.address}</span>
+            </button>
+          ))}
+          <button type="button" aria-pressed={useNewAddress} onClick={() => setUseNewAddress(true)} className={`w-full rounded-2xl border p-4 text-left font-black ${useNewAddress ? "border-[#5ba400] bg-[#f5faef]" : "border-stone-200 bg-white"}`}>
+            <span className="flex items-center gap-2"><Plus className="size-4" /> Use a new address</span>
+          </button>
+          {useNewAddress && <Field label="New delivery address"><Textarea autoFocus value={newAddress} onChange={(event) => setNewAddress(event.target.value)} placeholder="Flat, street, landmark, area, city and PIN" className="min-h-24 rounded-xl" /></Field>}
+        </div>
+        <Button disabled={savingCart || (useNewAddress ? !newAddress.trim() : !savedAddresses.some((address) => address.id === selectedAddressId))} onClick={continueWithAddress} className="w-full rounded-xl bg-[#ef3d3d]">
+          <CreditCard />{savingCart ? "Saving…" : "Continue to payment"}
+        </Button>
+      </DialogContent>
+    </Dialog>
     <PaymentDialog order={paying} close={() => setPaying(null)} state={state} setState={setState} onPaid={() => navigate(paying?.scheduleId ? "My schedule" : "Orders")} />
   </div>;
 }
@@ -1878,21 +1930,11 @@ function CustomerProfileV4({ session, state, setState }: { session: DemoSession;
 /** Re-renders once a second purely to keep a countdown string fresh — the
  * source of truth (starts_at/ends_at) always comes from the server, this
  * never derives or trusts a client-computed deadline. */
-function DropCountdown({ target }: { target: string }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => tick((n) => n + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return <>{formatCountdown(target)}</>;
-}
-
 function CreateFoodDropDialog({ open, close, vendor, products, state, setState }: { open: boolean; close: () => void; vendor: Vendor; products: Product[]; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
   const [productId, setProductId] = useState("");
   const [title, setTitle] = useState("");
   const [dropPrice, setDropPrice] = useState(0);
   const [quantity, setQuantity] = useState(10);
-  const [durationHours, setDurationHours] = useState(3);
   const [busy, setBusy] = useState(false);
   const product = products.find((p) => p.id === productId);
   const originalPrice = product ? finalPrice(product, state) : 0;
@@ -1901,7 +1943,6 @@ function CreateFoodDropDialog({ open, close, vendor, products, state, setState }
     setTitle("");
     setDropPrice(0);
     setQuantity(10);
-    setDurationHours(3);
     close();
   }
 
@@ -1912,17 +1953,15 @@ function CreateFoodDropDialog({ open, close, vendor, products, state, setState }
     if (!quantity || quantity <= 0) return toast.error("Enter how many units are available");
     setBusy(true);
     try {
-      const startsAt = new Date().toISOString();
-      const endsAt = new Date(new Date().getTime() + durationHours * 3600_000).toISOString();
-      const drop = await createLiveFoodDrop({ vendorId: vendor.id, productId: product.id, title: title.trim(), dropPrice, originalPrice, totalQuantity: quantity, startsAt, endsAt });
+      const drop = await createLiveFoodDrop({ vendorId: vendor.id, productId: product.id, title: title.trim(), dropPrice, originalPrice, totalQuantity: quantity });
       setState((s) => ({ ...s, foodDrops: [drop, ...s.foodDrops] }));
-      toast.success("Food Drop is live");
+      toast.success(dropDisplayStatus(drop) === "live" ? "Food Drop is live" : "Food Drop scheduled for 8:00 PM");
       dismiss();
     } catch (error) { toast.error(error instanceof Error ? error.message : "Drop could not be created"); }
     finally { setBusy(false); }
   }
 
-  return <Dialog open={open} onOpenChange={(v) => !v && dismiss()}><DialogContent className="rounded-[26px] sm:max-w-lg"><DialogHeader><DialogTitle className="text-lg font-black">New Food Drop</DialogTitle><DialogDescription>A time-limited discounted quantity of one of your products. Stock is enforced by the database — claims stop the instant units run out, even under simultaneous requests.</DialogDescription></DialogHeader>
+  return <Dialog open={open} onOpenChange={(v) => !v && dismiss()}><DialogContent className="rounded-[26px] sm:max-w-lg"><DialogHeader><DialogTitle className="text-lg font-black">New Food Drop</DialogTitle><DialogDescription>Prepare a discounted quantity of one of your products in advance. Customers can claim it daily from 8:00 PM to midnight IST. Stock is enforced by the database, even under simultaneous requests.</DialogDescription></DialogHeader>
     <div className="space-y-4">
       <Field label="Product"><Select value={productId} onValueChange={(value) => {
         setProductId(value);
@@ -1934,8 +1973,8 @@ function CreateFoodDropDialog({ open, close, vendor, products, state, setState }
       }}><SelectTrigger className="h-11 w-full rounded-xl"><SelectValue placeholder="Choose a product" /></SelectTrigger><SelectContent>{products.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}</SelectContent></Select></Field>
       <Field label="Drop title"><input value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} /></Field>
       <div className="grid grid-cols-2 gap-3"><Field label={`Drop price${originalPrice ? ` (was ${money(originalPrice)})` : ""}`}><input type="number" min="1" value={dropPrice || ""} onChange={(e) => setDropPrice(Number(e.target.value))} className={inputClass} /></Field><Field label="Units available"><input type="number" min="1" step="1" value={quantity || ""} onChange={(e) => setQuantity(Number(e.target.value))} className={inputClass} /></Field></div>
-      <Field label={`Runs for ${durationHours} hour${durationHours === 1 ? "" : "s"}`}><Slider value={[durationHours]} min={1} max={12} step={1} onValueChange={(v) => setDurationHours(v[0])} /></Field>
-      <Button onClick={() => void submit()} disabled={busy || !products.length} className="h-12 w-full rounded-xl bg-[#ef3d3d] font-black"><Zap />{busy ? "Publishing…" : "Publish drop"}</Button>
+      <p className="rounded-xl bg-[#f7f3ed] p-3 text-xs font-bold text-stone-600">Scheduled — Starts at 8:00 PM. Drops become available each evening and stop accepting claims at midnight.</p>
+      <Button onClick={() => void submit()} disabled={busy || !products.length} className="h-12 w-full rounded-xl bg-[#ef3d3d] font-black"><Zap />{busy ? "Publishing…" : "Schedule drop"}</Button>
     </div>
   </DialogContent></Dialog>;
 }
@@ -1943,6 +1982,7 @@ function CreateFoodDropDialog({ open, close, vendor, products, state, setState }
 function FoodDropsManager({ vendor, state, setState }: { vendor: Vendor; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
   const loadedRef = useRef(false);
   const [creating, setCreating] = useState(false);
+  const now = useTicker();
   const drops = state.foodDrops.filter((d) => d.vendorId === vendor.id).sort((a, b) => b.startsAt.localeCompare(a.startsAt));
   const dropIds = drops.map((d) => d.id);
   const claims = state.foodDropClaims.filter((c) => dropIds.includes(c.dropId));
@@ -1973,21 +2013,22 @@ function FoodDropsManager({ vendor, state, setState }: { vendor: Vendor; state: 
 
   return <div className="space-y-6">
     <Heading eyebrow="FLASH OFFERS" title="Food Drops" body="Time-limited offers on your own products. Stock is enforced by the database, not the app — once claims reach your quantity, the drop stops selling automatically, even under simultaneous claims." action={<Button onClick={() => setCreating(true)} disabled={!products.length} className="rounded-xl bg-[#ef3d3d]"><Plus />New drop</Button>} />
+    <p className="-mt-3 w-fit max-w-full rounded-2xl border border-[#d6ead7] bg-[#f3f8f1] px-4 py-3 text-sm font-bold leading-relaxed text-[#356747]">🕗 Food Drops: 8:00 PM – 12:00 AM IST | Grab your favourite deals every evening!</p>
     {!products.length && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Add an active product in your Catalog first — a drop always discounts an existing product.</div>}
     {drops.length ? <div className="grid gap-4 lg:grid-cols-2">{drops.map((drop) => {
       const product = state.products.find((p) => p.id === drop.productId);
-      const status = dropDisplayStatus(drop);
+      const currentTime = new Date(now);
+      const status = dropDisplayStatus(drop, currentTime);
       const dropClaims = claims.filter((c) => c.dropId === drop.id);
       const revenue = dropClaims.reduce((sum, c) => sum + c.totalPrice, 0);
       const claimedUnits = drop.totalQuantity - drop.remainingQuantity;
       const tone = status === "live" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : status === "sold_out" ? "border-amber-200 bg-amber-50 text-amber-800" : status === "scheduled" ? "border-sky-200 bg-sky-50 text-sky-800" : "border-stone-200 bg-stone-50 text-stone-500";
-      const statusLabel = status === "live" ? "Live" : status === "scheduled" ? "Scheduled" : status === "sold_out" ? "Sold out" : "Ended";
+      const statusLabel = status === "live" ? "LIVE" : status === "scheduled" ? "Scheduled — Starts at 8:00 PM" : status === "sold_out" ? "Sold out" : "Ended";
       return <div key={drop.id} className="surface-card rounded-[26px] p-5">
         <div className="flex items-start justify-between gap-3"><div><h3 className="font-black">{drop.title}</h3><p className="mt-1 text-xs text-stone-500">{product?.name || "Product"}</p></div><Status className={tone}>{statusLabel}</Status></div>
         <div className="mt-4 grid grid-cols-2 gap-3 text-sm"><Review label="Price" value={`${money(drop.dropPrice)} (was ${money(drop.originalPrice)})`} /><Review label="Discount" value={`${discountPercent(drop)}%`} /><Review label="Claimed" value={`${claimedUnits} / ${drop.totalQuantity}`} /><Review label="Revenue" value={money(revenue)} /></div>
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full bg-[#ef3d3d]" style={{ width: `${claimedPercent(drop)}%` }} /></div>
-        {status === "live" && <p className="mt-3 text-xs font-bold text-stone-500"><Timer className="mr-1 inline size-3.5" />Ends in <DropCountdown target={drop.endsAt} /></p>}
-        {status === "scheduled" && <p className="mt-3 text-xs font-bold text-stone-500"><Timer className="mr-1 inline size-3.5" />Starts in <DropCountdown target={drop.startsAt} /></p>}
+        {status === "live" && <p className="mt-3 text-xs font-bold text-stone-500"><Timer className="mr-1 inline size-3.5" />Closes at midnight · {formatCountdown(foodDropSchedule(drop, currentTime).endsAt.toISOString(), currentTime)}</p>}
         {(status === "live" || status === "scheduled") && <Button size="sm" variant="outline" onClick={() => void cancel(drop)} className="mt-4 rounded-xl text-red-600">End drop now</Button>}
       </div>;
     })}</div> : <Empty icon={Zap} title="No drops yet" body="Create a flash offer on one of your products to drive same-day demand." />}
@@ -1997,6 +2038,7 @@ function FoodDropsManager({ vendor, state, setState }: { vendor: Vendor; state: 
 
 function VendorArea({ active, session, state, setState, shorts }: { active: string; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; shorts: ShortsApi }) {
   const vendor = vendorFor(state, session)!;
+  if (active === "People followers") return <VendorPeopleFollowers vendor={vendor} />;
   if (active === "AI insights") return <VendorAIInsights vendor={vendor} state={state} session={session} />;
   if (active === "Online shop & POS") return <StorefrontPos vendor={vendor} state={state} setState={setState} session={session} />;
   if (active === "Store & radius") return <StoreRadius vendor={vendor} setState={setState} session={session} />;
@@ -2089,7 +2131,40 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
 
   return <div className="space-y-6"><Heading eyebrow="ORDER JOURNEY" title={scope === "customer" ? "Orders & live tracking" : scope === "vendor" ? "Fulfilment & tracking" : "Platform order control"} body={scope === "vendor" ? "Paid orders remain visible for every future delivery date. Use Today, Tomorrow or a date filter to plan fulfilment and assign an active delivery person." : "Track paid orders, fulfilment status and delivery progress."} />
     {scope === "customer" ? <div className="sp-mobile-metric-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Paid orders" value={String(baseOrders.length)} icon={Package} tone="green" /><Metric label="Active schedules" value={String(customerSchedules)} icon={CalendarDays} tone="blue" /><Metric label="Open requirements" value={String(customerOpenRequirements)} icon={ListChecks} tone="violet" /><Metric label="Order value" value={money(totalValue)} icon={CreditCard} tone="amber" /></div> : <><div className="sp-mobile-metric-grid grid gap-3 sm:grid-cols-3"><Metric label="Orders in view" value={String(orders.length)} icon={Package} tone="green" /><Metric label="Value in view" value={money(dayValue)} icon={IndianRupee} tone="amber" /><Metric label="All future order value" value={money(totalValue)} icon={CalendarDays} tone="blue" /></div><div className="surface-card flex flex-wrap items-center gap-2 rounded-3xl p-3">{([['today','Today'],['tomorrow','Tomorrow'],['all','All dates'],['custom','Choose date']] as const).map(([value,label]) => <button key={value} onClick={() => setDateMode(value)} className={`rounded-xl px-4 py-2 text-sm font-black ${dateMode === value ? "bg-[#171914] text-white" : "bg-stone-50 text-stone-600"}`}>{label}</button>)}{dateMode === "custom" && <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} className={`${inputClass} max-w-48`} />}</div></>}
-    {orders.length ? <div className="space-y-4">{orders.sort((a,b) => a.date.localeCompare(b.date)).map((order) => { const assignment = state.assignments.find((x) => x.orderId === order.id); const person = state.staff.find((x) => x.id === assignment?.staffId); const available = state.staff.filter((x) => x.vendorId === order.vendorId && x.active); const product = order.productId ? state.products.find((x) => x.id === order.productId) : undefined; return <div key={order.id} className="surface-card rounded-[28px] p-5"><div className="flex flex-col gap-4 xl:flex-row xl:items-start"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><b>{order.description}</b><Status>{order.status}</Status><Status className={order.payment === "Paid" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : ""}>{order.payment}</Status><span className="font-mono text-xs text-stone-400">{order.id}</span></div>        <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-5">{([["Delivery", `${order.date} · ${order.slot}`], ["Items", `${order.quantity} × ${product?.name || order.description}`], ["Total", money(order.total)], ["Mode", order.mode], ["Delivery person", person ? `${person.name} · ${person.phone}` : "Not assigned"]] as const).map(([label, value]) => scope === "vendor" ? <OrderDetail key={label} label={label} value={value} /> : <Review key={label} label={label} value={value} />)}</div>{order.status === "Out for delivery" && <div className="mt-4"><MapPreview lat={order.trackingLatitude || vendor?.latitude} lng={order.trackingLongitude || vendor?.longitude} radius={0} label="Live delivery position" /></div>}</div><div className="flex flex-wrap gap-2 xl:max-w-sm">{scope === "customer" ? <><Button size="sm" variant="outline" disabled={["Completed","Cancelled","Cancellation requested","Preparing","Out for delivery"].includes(order.status)} onClick={() => setRescheduling(order)}><CalendarDays />Reschedule</Button>{order.status === "Completed" && product && <Button size="sm" onClick={() => setRatingOrder(order)} className="bg-[#e3a008] hover:bg-[#c98a00]"><Star />{state.reviews.some((r) => r.productId === product.id && r.customerEmail === session.email) ? "Edit rating" : "Rate"}</Button>}</> : <><Select value={person?.id || "unassigned"} onValueChange={(staffId) => void assign(order, staffId)}><SelectTrigger className="w-44"><SelectValue placeholder="Assign delivery" /></SelectTrigger><SelectContent><SelectItem value="unassigned">Not assigned</SelectItem>{available.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={order.status} onValueChange={(value) => void update(order, value as Order["status"])}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{["Scheduled","Confirmed","Preparing","Ready","Out for delivery","Ready for pickup","Completed"].map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select>{scope === "vendor" && order.status === "Out for delivery" && <Button size="sm" onClick={() => locate(order)} className="bg-[#5ba400]"><MapPinned />Share live position</Button>}</>}</div></div></div>; })}</div> : <Empty icon={Package} title="No orders for this selection" body={scope === "vendor" ? "Try Tomorrow or All dates. Unpaid schedules stay with the customer until payment is completed." : "No paid orders are available in this view."} />}
+    {orders.length ? <div className="space-y-4">
+      {orders.sort((a, b) => a.date.localeCompare(b.date)).map((order) => {
+        const assignment = state.assignments.find((item) => item.orderId === order.id);
+        const person = state.staff.find((item) => item.id === assignment?.staffId);
+        const available = state.staff.filter((item) => item.vendorId === order.vendorId && item.active);
+        const product = order.productId ? state.products.find((item) => item.id === order.productId) : undefined;
+        const details = [
+          ["Delivery", <Fragment key="delivery"><span>{order.date}</span><span className="mt-1 block text-xs font-semibold text-stone-600">{order.slot}</span></Fragment>],
+          ["Items", <span className="font-bold" key="items">{order.quantity} × {product?.name || order.description}</span>],
+          ["Total", money(order.total)],
+          ["Mode", order.mode],
+          ["Delivery person", person ? <Fragment key="delivery-person"><span className="block">{person.name}</span><span className="mt-1 block break-all text-xs font-semibold text-stone-600">{person.phone}</span></Fragment> : "Not assigned"],
+        ] as const;
+        return <div key={order.id} className="surface-card rounded-[28px] p-5">
+          <div className="flex flex-col gap-4">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2"><b>{order.description}</b><Status>{order.status}</Status><Status className={order.payment === "Paid" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : ""}>{order.payment}</Status><span className="font-mono text-xs text-stone-400">{order.id}</span></div>
+              <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 xl:grid-cols-5">{details.map(([label, value]) => <OrderDetail key={label} label={label} value={value} />)}</div>
+              {order.status === "Out for delivery" && <div className="mt-4"><MapPreview lat={order.trackingLatitude || vendor?.latitude} lng={order.trackingLongitude || vendor?.longitude} radius={0} label="Live delivery position" /></div>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {scope === "customer" ? <>
+                <Button size="sm" variant="outline" disabled={["Completed", "Cancelled", "Cancellation requested", "Preparing", "Out for delivery"].includes(order.status)} onClick={() => setRescheduling(order)}><CalendarDays />Reschedule</Button>
+                {order.status === "Completed" && product && <Button size="sm" onClick={() => setRatingOrder(order)} className="bg-[#e3a008] hover:bg-[#c98a00]"><Star />{state.reviews.some((review) => review.productId === product.id && review.customerEmail === session.email) ? "Edit rating" : "Rate"}</Button>}
+              </> : <>
+                <Select value={person?.id || "unassigned"} onValueChange={(staffId) => void assign(order, staffId)}><SelectTrigger className="w-44"><SelectValue placeholder="Assign delivery" /></SelectTrigger><SelectContent><SelectItem value="unassigned">Not assigned</SelectItem>{available.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+                <Select value={order.status} onValueChange={(value) => void update(order, value as Order["status"])}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{["Scheduled", "Confirmed", "Preparing", "Ready", "Out for delivery", "Ready for pickup", "Completed"].map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select>
+                {scope === "vendor" && order.status === "Out for delivery" && <Button size="sm" onClick={() => locate(order)} className="bg-[#5ba400]"><MapPinned />Share live position</Button>}
+              </>}
+            </div>
+          </div>
+        </div>;
+      })}
+    </div> : <Empty icon={Package} title="No orders for this selection" body={scope === "vendor" ? "Try Tomorrow or All dates. Unpaid schedules stay with the customer until payment is completed." : "No paid orders are available in this view."} />}
     <OrderRescheduleDialog order={rescheduling} close={() => setRescheduling(null)} state={state} setState={setState} />
     <PaymentDialog order={paying} close={() => setPaying(null)} state={state} setState={setState} />
     <RateOrderDialog key={ratingOrder?.id || "closed"} order={ratingOrder} close={() => setRatingOrder(null)} state={state} setState={setState} session={session} />
@@ -2164,7 +2239,7 @@ function PaymentDialog({ order, close, state, setState, onPaid }: { order: Order
   }
   return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="rounded-[26px] sm:max-w-md"><DialogHeader><DialogTitle className="text-xl font-black">Pay for {order.id}</DialogTitle><DialogDescription>Simulated secure checkout for this environment. Confirming here records a real transaction and schedules the vendor payout — no external gateway is charged.</DialogDescription></DialogHeader>
     <div className="space-y-4">
-      <div className="rounded-2xl bg-[#f6f8f2] p-4 text-sm"><Review label="Order" value={order.description} /><Review label="Vendor" value={vendor?.businessName || "—"} /><Review label="Amount payable" value={money(order.total)} /></div>
+      <div className="rounded-2xl bg-[#f6f8f2] p-4 text-sm"><Review label="Order" value={order.description} /><Review label="Vendor" value={vendor?.businessName || "—"} /><Review label="Delivery address" value={order.deliveryAddress || "Not provided"} /><Review label="Amount payable" value={money(order.total)} /></div>
       <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Payment method</div><div className="grid grid-cols-3 gap-2">{(["UPI", "Card", "Net banking"] as const).map((item) => <button type="button" key={item} onClick={() => setMethod(item)} className={`rounded-xl border p-3 text-sm font-black ${method === item ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : ""}`}>{item}</button>)}</div></div>
       <Button onClick={() => void pay()} disabled={busy} className="h-12 w-full rounded-xl bg-[#5ba400] font-black hover:bg-[#4c8c00]"><CreditCard />{busy ? "Processing…" : `Pay ${money(order.total)}`}</Button>
       <p className="text-[11px] leading-5 text-stone-400">A {PLATFORM_COMMISSION_PERCENT}% platform commission is retained; the rest is scheduled to reach the vendor {PAYOUT_CYCLE_DAYS} days after collection.</p>
