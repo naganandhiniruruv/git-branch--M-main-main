@@ -10,7 +10,7 @@ export const DEMO_CUSTOMER = { email: "customer@sheplates.demo", name: "Raj" };
 export function buildDemoState() {
   const vendor = (id: string, businessName: string, category: string, latitude: number, longitude: number, address: string, extra: Record<string, unknown> = {}) => ({
     id, ownerEmail: `${id}@sheplates.demo`, ownerName: businessName, businessName, category, address, latitude, longitude, radiusKm: 10, delivery: true, pickup: true,
-    openToday: true, fssaiNumber: "Verified", certificateName: "cert.pdf", expiryDate: "2027-12-31", verification: "Verified", operational: "Active", plan: "Premium", ...extra,
+    openToday: true, fssaiNumber: "Verified", certificateName: "cert.pdf", expiryDate: "2027-12-31", verification: "Verified", operational: "Active", plan: "Crown", ...extra,
   });
   const vendors = [
     vendor("v-meena", "Meena's Home Kitchen", "Home food", 11.0431, 76.9805, "RS Puram, Coimbatore, Tamil Nadu 641002"),

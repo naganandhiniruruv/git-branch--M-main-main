@@ -1,5 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { uniqueById } from "./connect-map";
 import type { Role } from "./sheplates-data";
+import { nextFoodDropWindow } from "./food-drops";
 
 let browserClient: SupabaseClient | null = null;
 
@@ -31,7 +33,7 @@ export type MarketplaceDiagnostics = {
 };
 
 export type LiveVendorRow = {
-  id: string; owner_id: string; name: string; category: string; locality: string; address: string | null;
+  id: string; owner_id: string | null; vendor_kind?: "subscription" | "p0_connect"; name: string; category: string; locality: string; address: string | null;
   latitude: number | null; longitude: number | null; service_radius_km: number;
   delivery_enabled: boolean; pickup_enabled: boolean; store_open_today: boolean;
   verification_status: string; operational_status: string; marketplace_visible: boolean;
@@ -244,6 +246,77 @@ export async function loadLiveMarketplace(latitude: number, longitude: number) {
   };
 }
 
+export interface ConnectVendor {
+  vendor_kind?: string;
+  vendor_id: string;
+  vendor_name: string;
+  category: string;
+  description: string | null;
+  locality: string;
+  address: string | null;
+  latitude: number;
+  longitude: number;
+  whatsapp_number: string | null;
+  operating_hours: Record<string, unknown> | null;
+  logo_url: string | null;
+  distance_km: number;
+  service_radius_km: number;
+  store_open_today: boolean;
+}
+
+export function normalizeWhatsAppNumber(phone: string, defaultCountryCode = "+91"): string | null {
+  const trimmed = phone.trim();
+  if (!trimmed) return null;
+  const international = trimmed.startsWith("00") ? `+${trimmed.slice(2)}` : trimmed;
+  const digits = international.replace(/\D/g, "");
+  const normalized = international.startsWith("+")
+    ? `+${digits}`
+    : `${defaultCountryCode}${digits}`;
+  return /^\+[1-9]\d{7,14}$/.test(normalized) ? normalized : null;
+}
+
+export type WhatsAppClickSource = "map" | "vendor_profile" | "search";
+
+export async function trackLiveVendorWhatsAppClick(
+  vendorId: string,
+  source: WhatsAppClickSource,
+) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase || !isLiveSupabaseMode()) {
+    throw new Error("Live WhatsApp click tracking is not available.");
+  }
+
+  const { error } = await supabase.rpc("track_vendor_whatsapp_click", {
+    target_vendor_id: vendorId,
+    click_source: source,
+  });
+  if (error) throw error;
+}
+
+export async function loadConnectVendorsNearby(
+  latitude: number,
+  longitude: number
+): Promise<ConnectVendor[]> {
+  const supabase = getSupabaseBrowserClient();
+
+  if (!supabase || !isLiveSupabaseMode()) {
+    throw new Error("Live Connect access is not available.");
+  }
+
+  const { data, error } = await supabase.rpc("connect_vendors_nearby", {
+    customer_lat: latitude,
+    customer_lng: longitude,
+  });
+
+  if (error) {
+    console.error("Failed to load Connect vendors:", error.message);
+    throw error;
+  }
+
+  return uniqueById((data ?? []) as ConnectVendor[], (vendor) => vendor.vendor_id)
+    .filter((vendor) => vendor.vendor_kind === "p0_connect");
+}
+
 export async function loadLiveVendorWorkspace(vendorId: string) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
@@ -257,7 +330,8 @@ export async function loadLiveVendorWorkspace(vendorId: string) {
     productRows = fallbackProducts.data as LiveMenuItemRow[] | null;
     productError = fallbackProducts.error;
   }
-  const [vendor, documents] = await Promise.all([vendorPromise, documentsPromise]);
+  const [initialVendor, documents] = await Promise.all([vendorPromise, documentsPromise]);
+  const vendor = initialVendor;
   if (vendor.error) throw vendor.error;
   if (productError) throw productError;
   if (documents.error) throw documents.error;
@@ -268,19 +342,29 @@ export async function loadLiveOperationsWorkspace() {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
   const [vendors, products, profiles, documents, homeConfig, campaigns] = await Promise.all([
-    supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id,vendor_plans(code,name)").order("created_at", { ascending: false }),
+    supabase.from("vendors").select("id,owner_id,vendor_kind,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id,vendor_plans(code,name)").order("created_at", { ascending: false }),
     supabase.from("vendor_menu_items").select("id,vendor_id,name,category,unit,quantity_step,stock_quantity,vendor_base_price,active,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,pack_measure,image_url").order("created_at", { ascending: false }),
     supabase.from("profiles").select("id,full_name,role,vendor_id"),
     supabase.from("vendor_documents").select("vendor_id,document_number,storage_path,expiry_date,verification_status").order("created_at", { ascending: false }),
     supabase.from("platform_settings").select("config").eq("setting_key", "marketplace_home").maybeSingle(),
     supabase.from("marketing_campaigns").select("*").order("created_at", { ascending: false }).limit(100),
   ]);
-  for (const result of [vendors, products, profiles, documents]) if (result.error) throw result.error;
+  let vendorRows: LiveVendorRow[];
+  if (!vendors.error) {
+    vendorRows = (vendors.data || []) as LiveVendorRow[];
+  } else if ((vendors.error.code === "42703" || vendors.error.code === "PGRST204") && /vendor_kind/i.test(vendors.error.message)) {
+    const fallback = await supabase.from("vendors").select("id,owner_id,name,category,locality,address,latitude,longitude,service_radius_km,delivery_enabled,pickup_enabled,store_open_today,verification_status,operational_status,marketplace_visible,plan_id,vendor_plans(code,name)").order("created_at", { ascending: false });
+    if (fallback.error) throw fallback.error;
+    vendorRows = (fallback.data || []).map((row) => ({ ...row, vendor_kind: "subscription" })) as LiveVendorRow[];
+  } else {
+    throw vendors.error;
+  }
+  for (const result of [products, profiles, documents]) if (result.error) throw result.error;
   if (homeConfig.error) console.error("Homepage merchandising is unavailable:", homeConfig.error.message);
   if (campaigns.error) console.error("Marketing campaigns are unavailable:", campaigns.error.message);
   const config = homeConfig.error ? null : homeConfig.data?.config as { featuredProductIds?: string[]; recommendationPopupEnabled?: boolean; maxFeatured?: number } | null;
   const merchandisingError = homeConfig.error?.message || campaigns.error?.message || null;
-  return { vendors: (vendors.data || []) as LiveVendorRow[], products: (products.data || []) as LiveMenuItemRow[], profiles: profiles.data || [], documents: documents.data || [], merchandising: { featuredProductIds: config?.featuredProductIds || [], recommendationPopupEnabled: config?.recommendationPopupEnabled ?? true, maxFeatured: config?.maxFeatured || 6 }, campaigns: campaigns.error ? [] : (campaigns.data || []), merchandisingError };
+  return { vendors: vendorRows, products: (products.data || []) as LiveMenuItemRow[], profiles: profiles.data || [], documents: documents.data || [], merchandising: { featuredProductIds: config?.featuredProductIds || [], recommendationPopupEnabled: config?.recommendationPopupEnabled ?? true, maxFeatured: config?.maxFeatured || 6 }, campaigns: campaigns.error ? [] : (campaigns.data || []), merchandisingError };
 }
 
 export async function saveLiveMarketplaceHome(config: { featuredProductIds: string[]; recommendationPopupEnabled: boolean; maxFeatured: number }) {
@@ -403,7 +487,7 @@ export async function updateLiveVendorControls(vendorId: string, patch: {
   if (result.error) throw result.error;
 }
 
-export async function saveLiveVendorPlan(vendorId: string, planCode: "launch" | "growth" | "premium") {
+export async function saveLiveVendorPlan(vendorId: string, planCode: "taster" | "crave" | "thrive" | "crown") {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
   const plan = await supabase.from("vendor_plans").select("id").eq("code", planCode).single();
@@ -520,6 +604,7 @@ export async function submitLiveVendorApplication(input: {
   userId: string; businessName: string; category: string; locality: string;
   fssaiNumber: string; expiryDate: string; certificate: File; address?: string;
   latitude?: number; longitude?: number; radiusKm?: number; delivery?: boolean; pickup?: boolean;
+  operatingHours?: Record<string, unknown>;
 }) {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
@@ -533,6 +618,7 @@ export async function submitLiveVendorApplication(input: {
     address: input.address ?? input.locality, latitude: input.latitude, longitude: input.longitude,
     service_radius_km: input.radiusKm ?? 5, delivery_enabled: input.delivery ?? true,
     pickup_enabled: input.pickup ?? true, store_open_today: false,
+    ...(input.operatingHours ? { operating_hours: input.operatingHours } : {}),
   }).select("id").single();
   if (vendor.error) throw vendor.error;
   const document = await supabase.from("vendor_documents").insert({
@@ -647,12 +733,20 @@ export async function saveLiveOutletCertificate(input: { outletId: string; certi
   return commerceRequest({ action: "save_outlet_certificate", ...input });
 }
 
-export async function uploadLiveCertificate(input: { vendorId: string; file: File; outletId?: string }) {
+export async function uploadLiveCertificate(input: {
+  vendorId: string;
+  file: File;
+  outletId?: string;
+  documentNumber?: string;
+  expiryDate?: string;
+}) {
   const token = await getAccessToken();
   const form = new FormData();
   form.append("file", input.file);
   form.append("vendorId", input.vendorId);
   if (input.outletId) form.append("outletId", input.outletId);
+  if (input.documentNumber) form.append("documentNumber", input.documentNumber);
+  if (input.expiryDate) form.append("expiryDate", input.expiryDate);
   const response = await fetch("/api/certificate-upload", { method: "POST", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: form });
   const result = await response.json() as { path?: string; fileName?: string; error?: string };
   if (!response.ok) throw new Error(result.error || "Certificate upload failed.");
@@ -725,7 +819,7 @@ function mapFoodDropRow(row: FoodDropRow): import("@/lib/food-drops").FoodDrop {
 }
 const FOOD_DROP_COLUMNS = "id,vendor_id,product_id,title,description,drop_price,original_price,total_quantity,remaining_quantity,starts_at,ends_at,status";
 
-/** Marketplace-facing: only drops a customer could plausibly still claim.
+/** Marketplace-facing: today's drops, including those still waiting for the 8 PM opening.
  * Returns null (not []) when the list couldn't be fetched, so callers keep
  * what they already have instead of blanking the screen on a network error. */
 export async function loadLiveFoodDrops(): Promise<import("@/lib/food-drops").FoodDrop[] | null> {
@@ -750,15 +844,16 @@ export async function loadLiveVendorFoodDrops(vendorId: string): Promise<import(
 
 export async function createLiveFoodDrop(input: {
   vendorId: string; productId: string; title: string; description?: string;
-  dropPrice: number; originalPrice: number; totalQuantity: number; startsAt: string; endsAt: string;
+  dropPrice: number; originalPrice: number; totalQuantity: number;
 }): Promise<import("@/lib/food-drops").FoodDrop> {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const { startsAt, endsAt } = nextFoodDropWindow();
   const result = await supabase.from("food_drops").insert({
     vendor_id: input.vendorId, product_id: input.productId, title: input.title, description: input.description || null,
     drop_price: input.dropPrice, original_price: input.originalPrice,
     total_quantity: input.totalQuantity, remaining_quantity: input.totalQuantity,
-    starts_at: input.startsAt, ends_at: input.endsAt,
+    starts_at: startsAt.toISOString(), ends_at: endsAt.toISOString(),
   }).select(FOOD_DROP_COLUMNS).single();
   if (result.error || !result.data) throw result.error || new Error("Drop could not be created");
   return mapFoodDropRow(result.data as FoodDropRow);
@@ -772,8 +867,8 @@ export async function cancelLiveFoodDrop(dropId: string): Promise<void> {
 }
 
 /** The only write path for a claim — a thin wrapper around the atomic
- * claim_food_drop() RPC. Throws with Postgres's own message ("sold out, has
- * ended, or is no longer available") on any race/expiry/capacity failure so
+ * claim_food_drop() RPC. Throws with Postgres's own message on any race,
+ * closed-window, expiry, or capacity failure so
  * the caller can show it directly rather than trusting local stock math. */
 export async function claimLiveFoodDrop(dropId: string, quantity: number): Promise<import("@/lib/food-drops").FoodDropClaim> {
   const supabase = getSupabaseBrowserClient();

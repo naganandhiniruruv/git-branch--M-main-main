@@ -25,6 +25,16 @@ test("converts the saved cart into real pending orders before payment", async ()
   assert.match(ui, /checkoutLiveCart/);
 });
 
+test("lets customers choose an exact future date for cart orders and schedules", async () => {
+  const route = await readFile(path.join(root, "app/api/commerce/route.ts"), "utf8");
+  const ui = await readFile(path.join(root, "components/sheplates-v3.tsx"), "utf8");
+  assert.match(ui, /aria-label="Order delivery date" type="date" min=\{tomorrow\(\)\} value=\{deliveryDate\}/);
+  assert.match(ui, /scheduledDate: deliveryDate/);
+  assert.match(route, /const scheduledDate = String\(body\.scheduledDate/);
+  assert.match(ui, /aria-label=\{recurrence === "Once" \? "Delivery date" : "First delivery date"\}/);
+  assert.match(route, /if \(!isFutureDate\(startDate\)\)/);
+});
+
 test("restores cart, previous orders and paid schedule state from live data", async () => {
   const ui = await readFile(path.join(root, "components/sheplates-v3.tsx"), "utf8");
   const route = await readFile(path.join(root, "app/api/commerce/route.ts"), "utf8");

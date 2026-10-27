@@ -26,7 +26,7 @@ test('mobile marketplace avoids button collisions and overlay nav conflicts', ()
   assert.match(app, /sp-market-grid/);
   assert.match(app, /sp-card-actions/);
   assert.match(css, /@media \(max-width: 430px\)[\s\S]*sp-market-grid[\s\S]*grid-template-columns: minmax\(0, 1fr\)/);
-  assert.match(app, /!notificationsOpen && <nav className="sp-mobile-bottom-nav"/);
+  assert.match(app, /!notificationsOpen && <CustomerBottomNav/);
   assert.match(app, /sp-notification-sheet/);
 });
 

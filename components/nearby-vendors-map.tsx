@@ -6,6 +6,7 @@ import { loadOlaAccess, resetOlaAccess, type OlaAccess } from "@/lib/ola-client"
 import { NearbyVendorsMapLeaflet } from "./nearby-vendors-map-leaflet";
 import { NearbyVendorsMapOla } from "./nearby-vendors-map-ola";
 import type { MapPerson, MapVendor } from "./map-shared";
+import { uniqueValidMapPins } from "@/lib/connect-map";
 
 export type { MapPerson, MapVendor } from "./map-shared";
 
@@ -14,7 +15,9 @@ type Props = {
   height?: number; photoPins?: boolean; onPinClick?: (vendorId: string) => void; selectedId?: string; people?: MapPerson[]; selectedPersonId?: string; onPersonClick?: (personId: string) => void;
 };
 
-export function NearbyVendorsMap(props: Props) {
+export function NearbyVendorsMap(raw: Props) {
+  // Drop pins with invalid coordinates and repeated ids (a vendor can arrive from both the marketplace and Connect lists).
+  const props = { ...raw, vendors: uniqueValidMapPins(raw.vendors), people: raw.people ? uniqueValidMapPins(raw.people) : raw.people };
   const [engine, setEngine] = useState<"loading" | "ola" | "standard">("loading");
   const [access, setAccess] = useState<OlaAccess | null>(null);
   useEffect(() => {

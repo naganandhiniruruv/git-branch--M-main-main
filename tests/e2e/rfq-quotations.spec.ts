@@ -13,13 +13,13 @@ const tag = Date.now().toString(36);
 const RFQ_TITLE = `E2E monthly groceries ${tag}`;
 const PASSWORD = "Zz-test-123456";
 type Acct = { id: string; email: string; vendorId: string };
-const accts = {} as Record<"premium" | "growth" | "small", Acct>;
+const accts = {} as Record<"crown" | "thrive" | "small", Acct>;
 let customerId = "", rfqId = "";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
-async function newVendor(plan: "premium" | "growth", name: string, lat: number, lng: number, radius: number): Promise<Acct> {
+async function newVendor(plan: "crown" | "thrive", name: string, lat: number, lng: number, radius: number): Promise<Acct> {
   const sb = admin();
   const email = `zz-e2e-rfq-${tag}-${name.replace(/\W+/g, "").toLowerCase()}@sheplates.test`;
   const u = await sb.auth.admin.createUser({ email, password: PASSWORD, email_confirm: true, user_metadata: { full_name: name, role: "vendor" } });
@@ -41,15 +41,17 @@ test.beforeAll(async () => {
   let lat = Number(pref.data?.latitude), lng = Number(pref.data?.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) { lat = 11.0383; lng = 76.9781; await sb.from("customer_preferences").upsert({ customer_id: customerId, latitude: lat, longitude: lng, address: "RS Puram, Coimbatore", onboarding_complete: true }, { onConflict: "customer_id" }); }
   const north = (km: number) => lat + km / 111.32;
-  accts.premium = await newVendor("premium", "Premium Ten", north(4), lng, 10);   // 4 km away, radius 10: invited
-  accts.growth = await newVendor("growth", "Growth Ten", north(1), lng, 10);      // Package 2: not invited
-  accts.small = await newVendor("premium", "Premium Three", north(4), lng, 3);    // Package 3 but radius 3: not invited
+  accts.crown = await newVendor("crown", "Premium Ten", north(4), lng, 10);   // 4 km away, radius 10: invited
+  accts.thrive = await newVendor("thrive", "Growth Ten", north(1), lng, 10);      // Package 2: not invited
+  accts.small = await newVendor("crown", "Premium Three", north(4), lng, 3);    // Package 3 but radius 3: not invited
 });
 
 test.afterAll(async () => {
   const sb = admin();
   const reqs = rfqId ? [rfqId] : ((await sb.from("customer_requirements").select("id").eq("title", RFQ_TITLE)).data || []).map((r) => r.id);
   if (reqs.length) {
+    const files = (await sb.from("customer_requirement_files").select("storage_path").in("requirement_id", reqs)).data || [];
+    if (files.length) await sb.storage.from("customer-requirements").remove(files.map((file) => file.storage_path));
     const orders = ((await sb.from("orders").select("id").in("requirement_id", reqs)).data || []).map((o) => o.id);
     if (orders.length) { await sb.from("payments").delete().in("order_id", orders); await sb.from("orders").delete().in("id", orders); }
     await sb.from("customer_requirements").delete().in("id", reqs);
@@ -93,25 +95,33 @@ test("1. the customer publishes an RFQ and only the Package 3 vendor whose radiu
   await page.getByLabel("Request title").fill(RFQ_TITLE);
   await page.getByLabel("Item 1").fill("Basmati rice");
   await page.getByRole("button", { name: "Publish RFQ" }).click();
-  await expect(page.getByText(/RFQ sent to 1 Package 3 vendor near you/)).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/RFQ sent to 1 Crown vendor near you/)).toBeVisible({ timeout: 20_000 });
 
   await customerOpens(page, "My quotations");
   const card = page.getByTestId("rfq-card").filter({ hasText: RFQ_TITLE });
   await expect(card).toBeVisible({ timeout: 15_000 });
   await expect(card.getByTestId("rfq-invited")).toHaveText("1");
   await expect(card.getByTestId("rfq-quoted")).toHaveText("0");
+  await card.getByLabel(`Upload documents for ${RFQ_TITLE}`).setInputFiles({
+    name: "product-spec.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Preferred packaging details"),
+  });
+  await expect(card.getByRole("link", { name: "product-spec.txt" })).toBeVisible({ timeout: 15_000 });
   const row = (await admin().from("customer_requirements").select("id,invited_count,status").eq("title", RFQ_TITLE).single()).data!;
   rfqId = row.id;
   expect(row.status).toBe("quoting");
+  const document = (await admin().from("customer_requirement_files").select("file_name,storage_path").eq("requirement_id", rfqId).single()).data!;
+  expect(document.file_name).toBe("product-spec.txt");
   const invited = ((await admin().from("rfq_vendor_invitations").select("vendor_id").eq("requirement_id", rfqId)).data || []).map((x) => x.vendor_id);
-  expect(invited).toEqual([accts.premium.vendorId]);
+  expect(invited).toEqual([accts.crown.vendorId]);
   await page.context().close();
 });
 
 test("2. a Package 2 vendor sees the Package 3 lock and no RFQs", async ({ browser }) => {
-  const page = await signIn(browser, accts.growth);
+  const page = await signIn(browser, accts.thrive);
   await vendorOpensQuotes(page);
-  await expect(page.getByRole("heading", { name: "Quotations are available on Package 3" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Quotations are available on the Crown plan" })).toBeVisible();
   await expect(page.getByTestId("vendor-rfq")).toHaveCount(0);
   await page.context().close();
 });
@@ -125,7 +135,7 @@ test("3. a Package 3 vendor whose radius is too small is not shown the RFQ", asy
 });
 
 test("4. the invited Package 3 vendor sees the RFQ and sends a quotation", async ({ browser }) => {
-  const page = await signIn(browser, accts.premium);
+  const page = await signIn(browser, accts.crown);
   await vendorOpensQuotes(page);
   const card = page.getByTestId("vendor-rfq").filter({ hasText: RFQ_TITLE });
   await expect(card).toBeVisible({ timeout: 15_000 });
@@ -157,12 +167,12 @@ test("5. the customer sees the quotation, accepts it, and an order is created", 
   const order = (await admin().from("orders").select("order_number,status,customer_total,vendor_id,requirement_id").eq("requirement_id", rfqId).single()).data!;
   expect(order.status).toBe("awarded");
   expect(Number(order.customer_total)).toBe(184.5);
-  expect(order.vendor_id).toBe(accts.premium.vendorId);
+  expect(order.vendor_id).toBe(accts.crown.vendorId);
   await page.context().close();
 });
 
 test("6. the winning vendor sees that they won", async ({ browser }) => {
-  const page = await signIn(browser, accts.premium);
+  const page = await signIn(browser, accts.crown);
   await vendorOpensQuotes(page);
   const card = page.getByTestId("vendor-rfq").filter({ hasText: RFQ_TITLE });
   await expect(card.getByText("You won")).toBeVisible({ timeout: 15_000 });

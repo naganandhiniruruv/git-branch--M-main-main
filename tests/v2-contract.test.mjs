@@ -141,7 +141,7 @@ test("ships real maps, clear units, and vendor marketplace readiness gates", asy
   const agent = await readFile(path.join(root, "app/api/agent/route.ts"), "utf8");
   const nutrition = await readFile(path.join(root, "lib/nutrition.ts"), "utf8");
 
-  assert.match(ui, /openstreetmap\.org\/export\/embed/);
+  assert.match(ui, /components\/pin-map/);
   assert.match(ui, /Find typed address/);
   assert.match(ui, /250 ml pouch\/bottle/);
   assert.match(ui, /Use my actual GPS location/);

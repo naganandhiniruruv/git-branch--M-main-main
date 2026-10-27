@@ -1,6 +1,6 @@
 import type { Role } from "./sheplates-data";
 
-export type DemoSession = { email: string; name: string; role: Role; userId?: string; vendorId?: string; isNewVendor?: boolean; toursCompleted?: string[]; privateAccount?: boolean };
+export type DemoSession = { email: string; name: string; role: Role; userId?: string; vendorId?: string; isNewVendor?: boolean; p0UpgradeInvitationId?: string; toursCompleted?: string[]; privateAccount?: boolean };
 export type VerificationStatus = "Draft" | "Submitted" | "Under review" | "Changes required" | "Verified" | "Rejected" | "Expired";
 export type OrderStatus = "Awarded" | "Confirmed" | "Preparing" | "Ready" | "Out for delivery" | "Ready for pickup" | "Completed" | "Cancellation requested" | "Cancelled";
 export type PaymentStatus = "Paid" | "Reversal pending" | "Reversal initiated" | "Refunded";
@@ -9,7 +9,7 @@ export type VendorApplication = {
   id: string; ownerEmail: string; ownerName: string; businessName: string; category: string;
   locality: string; fssaiNumber: string; certificateName: string; expiryDate: string;
   verification: VerificationStatus; operational: "Inactive" | "Active" | "Paused" | "Suspended";
-  plan: "Launch" | "Growth" | "Premium"; submittedAt: string; reviewNote?: string;
+  plan: "Taster" | "Crave" | "Thrive" | "Crown"; submittedAt: string; reviewNote?: string;
 };
 
 export type MenuItem = {
@@ -57,9 +57,9 @@ export const demoAccounts = [
 ];
 
 export const initialApplications: VendorApplication[] = [
-  {id:"APP-1001",ownerEmail:"vendor@sheplates.demo",ownerName:"Murugan",businessName:"Kovai Fresh Dairy",category:"Milk & dairy",locality:"Ganapathy",fssaiNumber:"12426018000123",certificateName:"kovai-fresh-fssai.pdf",expiryDate:"2027-08-31",verification:"Verified",operational:"Active",plan:"Premium",submittedAt:"28 Aug 2026"},
-  {id:"APP-1002",ownerEmail:"newvendor@sheplates.demo",ownerName:"Malar",businessName:"Malar Home Foods",category:"Home food",locality:"Peelamedu",fssaiNumber:"",certificateName:"",expiryDate:"",verification:"Draft",operational:"Inactive",plan:"Launch",submittedAt:"Not submitted"},
-  {id:"APP-1003",ownerEmail:"hens@sheplates.demo",ownerName:"Kavitha",businessName:"Happy Hens Farm",category:"Eggs",locality:"Saravanampatti",fssaiNumber:"12426018000987",certificateName:"happy-hens-food-license.pdf",expiryDate:"2027-01-18",verification:"Under review",operational:"Inactive",plan:"Growth",submittedAt:"5 Sep 2026"},
+  {id:"APP-1001",ownerEmail:"vendor@sheplates.demo",ownerName:"Murugan",businessName:"Kovai Fresh Dairy",category:"Milk & dairy",locality:"Ganapathy",fssaiNumber:"12426018000123",certificateName:"kovai-fresh-fssai.pdf",expiryDate:"2027-08-31",verification:"Verified",operational:"Active",plan:"Crown",submittedAt:"28 Aug 2026"},
+  {id:"APP-1002",ownerEmail:"newvendor@sheplates.demo",ownerName:"Malar",businessName:"Malar Home Foods",category:"Home food",locality:"Peelamedu",fssaiNumber:"",certificateName:"",expiryDate:"",verification:"Draft",operational:"Inactive",plan:"Crave",submittedAt:"Not submitted"},
+  {id:"APP-1003",ownerEmail:"hens@sheplates.demo",ownerName:"Kavitha",businessName:"Happy Hens Farm",category:"Eggs",locality:"Saravanampatti",fssaiNumber:"12426018000987",certificateName:"happy-hens-food-license.pdf",expiryDate:"2027-01-18",verification:"Under review",operational:"Inactive",plan:"Thrive",submittedAt:"5 Sep 2026"},
 ];
 
 export const initialMenuItems: MenuItem[] = [

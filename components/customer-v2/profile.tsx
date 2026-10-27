@@ -7,10 +7,10 @@ import Image from "next/image";
 import { BadgeCheck, CalendarDays, ClipboardCheck, Heart, HelpCircle, ListChecks, LogOut, Package, ShoppingCart, TicketCheck, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { claimedPercent, discountPercent, dropDisplayStatus, type FoodDrop } from "@/lib/food-drops";
+import { claimedPercent, discountPercent, dropDisplayStatus, foodDropSchedule, formatCountdown, type FoodDrop } from "@/lib/food-drops";
 import type { Product, V3State } from "@/components/sheplates-v3";
 import type { SocialApi } from "@/lib/social";
-import { Avatar, EmptyState, PhotoTile, SegTabs, Stars, closesIn, money, priceOf, shortArea, useTicker, vendorPhoto, vendorRating } from "./kit";
+import { Avatar, EmptyState, PhotoTile, SegTabs, Stars, money, priceOf, shortArea, useTicker, vendorPhoto, vendorRating } from "./kit";
 import { vendorDistanceKm } from "./discover";
 import type { FoodShort } from "@/lib/food-shorts";
 import { ShortThumb } from "./shorts";
@@ -105,9 +105,12 @@ function ProductRow({ product, state, onAdd, onPlan, isNew, planLabel = "Plan" }
 }
 
 function VendorDropRow({ drop, onClaim }: { drop: FoodDrop; onClaim: (d: FoodDrop, q: number) => Promise<void> }) {
-  useTicker(); const [busy, setBusy] = useState(false);
-  return <div className="flex items-center gap-3 rounded-2xl border border-stone-200/70 bg-white p-3"><div className="min-w-0 flex-1"><div className="truncate text-sm font-black">{drop.title}</div><div className="mt-0.5 text-xs font-bold text-stone-500">Closes in {closesIn(drop.endsAt)} · {drop.remainingQuantity} left · {discountPercent(drop)}% off</div><div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-stone-100"><div className="h-full bg-[#e0194f]" style={{ width: `${claimedPercent(drop)}%` }} /></div></div>
-    <div className="text-right"><div className="font-black">{money(drop.dropPrice)}</div><button type="button" disabled={busy} onClick={async () => { setBusy(true); try { await onClaim(drop, 1); } finally { setBusy(false); } }} className="mt-1 rounded-full bg-[#e0194f] px-4 py-1.5 text-xs font-black text-white disabled:opacity-50">Add +</button></div></div>;
+  const now = useTicker(); const [busy, setBusy] = useState(false);
+  const currentTime = new Date(now);
+  const status = dropDisplayStatus(drop, currentTime);
+  const schedule = foodDropSchedule(drop);
+  return <div className="flex items-center gap-3 rounded-2xl border border-stone-200/70 bg-white p-3"><div className="min-w-0 flex-1"><div className="truncate text-sm font-black">{drop.title}</div><div className="mt-0.5 text-xs font-bold text-stone-500">{status === "live" ? <>LIVE · Closes in {formatCountdown(schedule.endsAt.toISOString(), currentTime)}</> : <>Scheduled — Starts at 8:00 PM</>} · {drop.remainingQuantity} left · {discountPercent(drop)}% off</div><div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-stone-100"><div className="h-full bg-[#e0194f]" style={{ width: `${claimedPercent(drop)}%` }} /></div></div>
+    <div className="text-right"><div className="font-black">{money(drop.dropPrice)}</div><button type="button" disabled={busy || status !== "live"} onClick={async () => { setBusy(true); try { await onClaim(drop, 1); } finally { setBusy(false); } }} className="mt-1 rounded-full bg-[#e0194f] px-4 py-1.5 text-xs font-black text-white disabled:opacity-50">{status === "live" ? "Add +" : "Available at 8 PM"}</button></div></div>;
 }
 
 export function VendorProfileDialog({ vendorId, onClose, state, social, profile, onAdd, onPlan, onClaimDrop, onFollowed, shorts = [], onOpenShorts }: {
@@ -119,7 +122,7 @@ export function VendorProfileDialog({ vendorId, onClose, state, social, profile,
   const vendor = vendorId ? state.vendors.find((v) => v.id === vendorId) : undefined;
   if (!vendor) return null;
   const products = state.products.filter((p) => p.vendorId === vendor.id && p.active);
-  const drops = state.foodDrops.filter((d) => d.vendorId === vendor.id && dropDisplayStatus(d) === "live");
+  const drops = state.foodDrops.filter((d) => d.vendorId === vendor.id && ["live", "scheduled"].includes(dropDisplayStatus(d)));
   const productIds = new Set(products.map((p) => p.id)); const reviews = state.reviews.filter((r) => productIds.has(r.productId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const rating = vendorRating(state, vendor.id); const distance = vendorDistanceKm(profile, vendor); const following = social.followed.includes(vendor.id);
   const photo = vendorPhoto(state, vendor);
@@ -137,7 +140,7 @@ export function VendorProfileDialog({ vendorId, onClose, state, social, profile,
         {tab === "Menu" && (products.length ? <><h3 className="text-sm font-black">Today&apos;s Menu ({products.length})</h3>{products.map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} />)}</> : <EmptyState emoji="🍽️" title="Nothing on the menu today" body="This vendor hasn&apos;t published any items right now." />)}
         {tab === "New Products" && (products.length ? products.slice(0, 4).map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} isNew />) : <EmptyState emoji="✨" title="No new products" body="Newly added items appear here first." />)}
         {tab === "Subscriptions" && (products.length ? <><p className="text-xs font-bold text-stone-500">Pick any item and set how often you want it — daily, weekly or on custom days.</p>{products.map((p) => <ProductRow key={p.id} product={p} state={state} onAdd={onAdd} onPlan={onPlan} planLabel="Subscribe" />)}</> : <EmptyState emoji="🔁" title="No subscription items" body="Items you can subscribe to appear here." />)}
-        {tab === "Food Drops" && (drops.length ? drops.map((d) => <VendorDropRow key={d.id} drop={d} onClaim={onClaimDrop} />) : <EmptyState emoji="⚡" title="No live drops" body="Follow this vendor to hear first when they post surplus or a limited batch." />)}
+        {tab === "Food Drops" && (drops.length ? drops.map((d) => <VendorDropRow key={d.id} drop={d} onClaim={onClaimDrop} />) : <EmptyState emoji="⚡" title="No drops scheduled" body="Follow this vendor to hear first when they post surplus or a limited batch." />)}
         {tab === "Shorts" && <div className="grid grid-cols-2 gap-3 sm:grid-cols-3" data-testid="vendor-shorts">{shorts.map((s, i) => <ShortThumb key={s.id} short={s} onOpen={() => { onClose(); onOpenShorts?.(shorts, i); }} />)}</div>}
         {tab === "Reviews" && (reviews.length ? reviews.slice(0, 20).map((r) => { const product = state.products.find((p) => p.id === r.productId); const verified = !/^demo\d+@sheplates\.demo$/.test(r.customerEmail); return <div key={r.id} className="rounded-2xl border border-stone-200/70 bg-white p-3.5"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><Avatar name={r.customerName} size={30} /><div><div className="text-sm font-black">{r.customerName}</div><div className="text-[11px] font-bold text-stone-400">{product?.name || "Product"} · {r.createdAt}</div></div></div><Stars value={r.rating} /></div>{verified && <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700"><BadgeCheck className="size-3" />Verified Purchase</span>}<p className="mt-1.5 text-sm text-stone-600">{r.comment || "No written feedback."}</p></div>; }) : <EmptyState emoji="⭐" title="No reviews yet" body="Reviews appear after customers receive an order." />)}
       </div>

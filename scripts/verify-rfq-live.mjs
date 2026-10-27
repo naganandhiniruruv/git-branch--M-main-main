@@ -34,13 +34,13 @@ try {
   const cust = await mkUser("customer", "cust"), cust2 = await mkUser("customer", "cust2");
   const names = ["v1", "v2", "v3", "v4", "v5", "v6", "v7"]; const vu = {}; for (const n of names) vu[n] = await mkUser("vendor", n);
   const vid = {
-    v1: await mkVendor(vu.v1, "RFQ V1 Premium r10 @4km", at(4).lat, at(4).lng, 10, "premium"),
-    v2: await mkVendor(vu.v2, "RFQ V2 Premium r3 @4km", at(4).lat, at(4).lng, 3, "premium"),
-    v3: await mkVendor(vu.v3, "RFQ V3 Growth r10 @1km", at(1).lat, at(1).lng, 10, "growth"),
-    v4: await mkVendor(vu.v4, "RFQ V4 Launch r10 @1km", at(1).lat, at(1).lng, 10, "launch"),
-    v5: await mkVendor(vu.v5, "RFQ V5 Premium unverified", at(1).lat, at(1).lng, 10, "premium", false),
-    v6: await mkVendor(vu.v6, "RFQ V6 Premium r10 @12km", at(12).lat, at(12).lng, 10, "premium"),
-    v7: await mkVendor(vu.v7, "RFQ V7 Premium r15 @12km", at(12).lat, at(12).lng, 15, "premium"),
+    v1: await mkVendor(vu.v1, "RFQ V1 Premium r10 @4km", at(4).lat, at(4).lng, 10, "crown"),
+    v2: await mkVendor(vu.v2, "RFQ V2 Premium r3 @4km", at(4).lat, at(4).lng, 3, "crown"),
+    v3: await mkVendor(vu.v3, "RFQ V3 Growth r10 @1km", at(1).lat, at(1).lng, 10, "thrive"),
+    v4: await mkVendor(vu.v4, "RFQ V4 Launch r10 @1km", at(1).lat, at(1).lng, 10, "crave"),
+    v5: await mkVendor(vu.v5, "RFQ V5 Premium unverified", at(1).lat, at(1).lng, 10, "crown", false),
+    v6: await mkVendor(vu.v6, "RFQ V6 Premium r10 @12km", at(12).lat, at(12).lng, 10, "crown"),
+    v7: await mkVendor(vu.v7, "RFQ V7 Premium r15 @12km", at(12).lat, at(12).lng, 15, "crown"),
   };
   const items = [{ name: "Rice", quantity: 25, unit: "kg", brand: "Any" }, { name: "Toor dal", quantity: 5, unit: "kg" }, { name: "Sunflower oil", quantity: 4, unit: "litre" }];
   const publish = (client, o = {}) => client.rpc("publish_requirement", { p_title: "Monthly groceries", p_locality: "RS Puram", p_lat: ORIGIN.lat, p_lng: ORIGIN.lng, p_delivery_date: ymd(plusDays(10)), p_fulfilment: "vendor_delivery", p_quote_deadline: plusDays(5).toISOString(), p_items: items, ...o }).single();
