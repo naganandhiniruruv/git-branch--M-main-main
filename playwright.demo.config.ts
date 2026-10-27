@@ -7,6 +7,7 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./tests/e2e",
   testMatch: "**/*.demo.spec.ts",
+  testIgnore: "**/ola-map.demo.spec.ts", // needs the Ola stand-in service: run with playwright.ola.config.ts
   fullyParallel: false,
   workers: 1,
   retries: 0,

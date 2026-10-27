@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { olaAutocomplete, olaConfigured, olaGeocode, olaReverseGeocode } from "@/lib/ola-maps";
 
 type NominatimPlace = {
   display_name?: string;
@@ -21,6 +22,13 @@ export async function GET(request: Request) {
 
   if (suggest) {
     if (!query || query.length < 3) return NextResponse.json({ suggestions: [] });
+    if (olaConfigured() && (process.env.OLA_MAPS_API_KEY || process.env.OLA_MAPS_CLIENT_ID)) {
+      try {
+        const near = input.get("lat") !== null && input.get("lng") !== null && Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0) ? { lat, lng } : undefined;
+        const found = await olaAutocomplete(query, near);
+        if (found.length) return NextResponse.json({ suggestions: found, attribution: "Ola Maps" }, { headers: { "Cache-Control": "private, max-age=120" } });
+      } catch (error) { console.warn("Ola autocomplete failed, using the standard search", error instanceof Error ? error.message : error); }
+    }
     const endpoint = new URL("https://nominatim.openstreetmap.org/search");
     endpoint.searchParams.set("q", query);
     endpoint.searchParams.set("format", "jsonv2");
@@ -38,6 +46,13 @@ export async function GET(request: Request) {
     } catch {
       return NextResponse.json({ suggestions: [] });
     }
+  }
+
+  if (olaConfigured() && (process.env.OLA_MAPS_API_KEY || process.env.OLA_MAPS_CLIENT_ID)) {
+    try {
+      if (query) { const hit = await olaGeocode(query); if (hit) return NextResponse.json({ ...hit, attribution: "Ola Maps" }, { headers: { "Cache-Control": "private, max-age=300" } }); }
+      else if (Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180) { const hit = await olaReverseGeocode(lat, lng); if (hit) return NextResponse.json({ ...hit, attribution: "Ola Maps" }, { headers: { "Cache-Control": "private, max-age=300" } }); }
+    } catch (error) { console.warn("Ola geocoding failed, using the standard search", error instanceof Error ? error.message : error); }
   }
 
   let endpoint: URL;
