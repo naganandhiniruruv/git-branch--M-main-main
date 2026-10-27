@@ -4,7 +4,7 @@
 // Schedules tab wrapper.
 import type * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { loadConnectVendorsNearby, normalizeWhatsAppNumber, trackLiveVendorWhatsAppClick, type ConnectVendor, type WhatsAppClickSource } from "@/lib/supabase";
+import { isLiveSupabaseMode, loadConnectVendorsNearby, normalizeWhatsAppNumber, trackLiveVendorWhatsAppClick, type ConnectVendor, type WhatsAppClickSource } from "@/lib/supabase";
 import { mergeMarketplaceAndConnectPins, uniqueById } from "@/lib/connect-map";
 import { BadgeCheck, List, MapPin, Search, Timer, Zap, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
@@ -157,7 +157,8 @@ export function MapsTab({ state, profile, social, shorts, people, peopleRadius, 
     | { locationKey: string; status: "error"; error: string }
     | null
   >(null);
-  const locationKey = locationConfirmed &&
+  // Direct-contact (WhatsApp) vendors come from the live database; demo mode has none and should not show an error for that.
+  const locationKey = isLiveSupabaseMode() && locationConfirmed &&
     Number.isFinite(profile.latitude) &&
     Number.isFinite(profile.longitude)
     ? `${profile.latitude}:${profile.longitude}`
