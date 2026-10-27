@@ -159,6 +159,7 @@ test.describe("People: follow, search by handle, and who is nearby (demo data)",
   });
 
   test("the Maps tab has a People view with pins, distance and who-to-show filters", async ({ page }) => {
+    test.setTimeout(60_000); // with real Ola credentials set, the map loads over the network
     await openAs(page);
     await tab(page, "Maps").click();
     await expect(page.locator(".sp-vendor-map")).toBeVisible({ timeout: 15_000 });
