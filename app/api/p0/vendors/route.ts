@@ -354,32 +354,39 @@ export async function POST(request: Request) {
       });
       if (startError) throw startError;
 
-      const { data: inviteData, error: inviteError } = await ctx.admin.auth.admin.inviteUserByEmail(email, {
-        redirectTo: inviteUrl(request, invitationId),
-        data: { full_name: "", role: "vendor", p0_upgrade_invitation_id: invitationId },
-      });
-      if (inviteError || !inviteData.user) {
+        const { data: inviteData, error: inviteError } = await ctx.admin.auth.admin.inviteUserByEmail(email, {
+          redirectTo: inviteUrl(request, invitationId),
+          data: { full_name: "", role: "vendor", p0_upgrade_invitation_id: invitationId },
+        });
+        if (inviteError) {
+  console.error("[P0 Upgrade] Supabase invitation failed:", {
+    message: inviteError.message,
+    status: inviteError.status,
+    code: inviteError.code,
+  });
+}
+        if (inviteError || !inviteData.user) {
+          const { error: markError } = await ctx.admin.rpc("p0_mark_upgrade_invitation", {
+            p_actor: ctx.userId,
+            p_invitation: invitationId,
+            p_delivery_status: "delivery_failed",
+          });
+          if (markError) throw markError;
+          throw inviteError || new Error("Supabase Auth did not return an invited account.");
+        }
+
         const { error: markError } = await ctx.admin.rpc("p0_mark_upgrade_invitation", {
           p_actor: ctx.userId,
           p_invitation: invitationId,
-          p_delivery_status: "delivery_failed",
+          p_delivery_status: "sent",
+          p_provider_user_id: inviteData.user.id,
         });
         if (markError) throw markError;
-        throw inviteError || new Error("Supabase Auth did not return an invited account.");
+        return NextResponse.json({ invitationId, status: "sent", expiresInDays: 7 });
       }
 
-      const { error: markError } = await ctx.admin.rpc("p0_mark_upgrade_invitation", {
-        p_actor: ctx.userId,
-        p_invitation: invitationId,
-        p_delivery_status: "sent",
-        p_provider_user_id: inviteData.user.id,
-      });
-      if (markError) throw markError;
-      return NextResponse.json({ invitationId, status: "sent", expiresInDays: 7 });
+      return NextResponse.json({ error: "Unsupported P0 action." }, { status: 400 });
+    } catch (error) {
+      return errorResponse(error);
     }
-
-    return NextResponse.json({ error: "Unsupported P0 action." }, { status: 400 });
-  } catch (error) {
-    return errorResponse(error);
   }
-}
