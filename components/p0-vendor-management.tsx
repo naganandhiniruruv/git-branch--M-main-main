@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getAccessToken, normalizeWhatsAppNumber, uploadLiveCertificate } from "@/lib/supabase";
+import { P0VendorLocationPicker } from "@/components/p0-vendor-location-picker";
 
 type Permission = "can_create" | "can_review" | "can_cancel" | "can_reactivate" | "can_upgrade" | "can_upload";
 type Permissions = Record<Permission, boolean>;
@@ -148,23 +149,6 @@ export function P0VendorManagement({ role }: { role: "operations" | "admin" }) {
 
   function updateForm<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((current) => ({ ...current, [key]: value }));
-  }
-
-  async function findOnMap() {
-    const query = [form.address, form.locality].filter(Boolean).join(", ").trim();
-    if (query.length < 3) return setError("Type the address or locality first, then find it on the map.");
-    setError("");
-    try {
-      const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`);
-      const result = await response.json() as { suggestions?: { address: string; latitude: number; longitude: number }[] };
-      const place = result.suggestions?.[0];
-      if (!place) return setError("No map match for that address. Check the spelling or type the coordinates.");
-      updateForm("latitude", String(place.latitude));
-      updateForm("longitude", String(place.longitude));
-      setNotice(`Location set from the map: ${place.address}`);
-    } catch {
-      setError("The map search is unavailable. Type the coordinates instead.");
-    }
   }
 
   async function createVendor(event: React.FormEvent<HTMLFormElement>) {
@@ -360,9 +344,29 @@ export function P0VendorManagement({ role }: { role: "operations" | "admin" }) {
         <label className="text-xs font-bold">Contact person<input required value={form.contactName} onChange={(event) => updateForm("contactName", event.target.value)} className={inputClass} /></label>
         <label className="text-xs font-bold">Contact phone<input required type="tel" value={form.contactPhone} onChange={(event) => updateForm("contactPhone", event.target.value)} className={inputClass} /></label>
         <label className="text-xs font-bold">WhatsApp number<input required type="tel" value={form.whatsappNumber} onChange={(event) => updateForm("whatsappNumber", event.target.value)} placeholder="+91 98XXXXXXXX" className={inputClass} /></label>
-        <label className="text-xs font-bold">Locality<input required value={form.locality} onChange={(event) => updateForm("locality", event.target.value)} className={inputClass} /></label>
-        <label className="text-xs font-bold sm:col-span-2">Address<textarea value={form.address} onChange={(event) => updateForm("address", event.target.value)} className={inputClass} /></label>
-        <div className="sm:col-span-2"><button type="button" onClick={() => void findOnMap()} className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-black hover:bg-stone-50">Find address on map</button><span className="ml-2 text-xs text-stone-500">Fills latitude and longitude from the address and locality.</span></div>
+        <label className="text-xs font-bold">Locality<input required value={form.locality} onChange={(event) => {
+          updateForm("locality", event.target.value);
+          updateForm("latitude", "");
+          updateForm("longitude", "");
+        }} className={inputClass} /></label>
+        <label className="text-xs font-bold sm:col-span-2">Address<textarea value={form.address} onChange={(event) => {
+          updateForm("address", event.target.value);
+          updateForm("latitude", "");
+          updateForm("longitude", "");
+        }} className={inputClass} /></label>
+        <P0VendorLocationPicker
+          address={form.address}
+          locality={form.locality}
+          latitude={form.latitude}
+          longitude={form.longitude}
+          radiusKm={form.radius}
+          onSave={(place) => {
+            updateForm("address", place.address);
+            updateForm("latitude", String(place.latitude));
+            updateForm("longitude", String(place.longitude));
+            setNotice(`Vendor pin saved: ${place.address}`);
+          }}
+        />
         <label className="text-xs font-bold">Latitude<input required type="number" step="any" min="-90" max="90" value={form.latitude} onChange={(event) => updateForm("latitude", event.target.value)} className={inputClass} /></label>
         <label className="text-xs font-bold">Longitude<input required type="number" step="any" min="-180" max="180" value={form.longitude} onChange={(event) => updateForm("longitude", event.target.value)} className={inputClass} /></label>
         <label className="text-xs font-bold">Service radius (km)<input required type="number" step="0.5" min="0.5" max="100" value={form.radius} onChange={(event) => updateForm("radius", event.target.value)} className={inputClass} /></label>

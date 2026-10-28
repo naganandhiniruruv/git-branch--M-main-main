@@ -51,6 +51,25 @@ test.describe("Customer portal — redesigned shell (demo data)", () => {
     await expect(dialog.getByText(/Chicken Biryani/)).toBeVisible();
   });
 
+  test("Vendor menu: wishlist heart saves the product to the Wishlist page", async ({ page }) => {
+    await openAsCustomer(page);
+    await tab(page, "Marketplace").click();
+    await page.getByRole("button", { name: "Open Meena's Home Kitchen" }).first().click();
+
+    const dialog = page.getByRole("dialog");
+    const productName = (await dialog.locator(".text-sm.font-black.leading-snug").first().textContent())?.trim();
+    const saveButton = dialog.getByRole("button", { name: "Save to wishlist" }).first();
+    await expect(saveButton).toBeVisible();
+    await saveButton.click();
+    await expect(dialog.getByRole("button", { name: "Remove from wishlist" }).first()).toHaveAttribute("aria-pressed", "true");
+
+    await page.keyboard.press("Escape");
+    await tab(page, "Profile").click();
+    await page.getByRole("button", { name: "Wishlist", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Your wishlist" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: productName! })).toBeVisible();
+  });
+
   test("Food Drops: live cards with countdowns; Following scope fills once a vendor is followed", async ({ page }) => {
     await openAsCustomer(page);
     await tab(page, "Food Drops").click();

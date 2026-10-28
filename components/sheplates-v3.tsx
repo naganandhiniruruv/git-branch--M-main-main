@@ -443,6 +443,7 @@ function repairSavedState(raw: V3State): V3State {
     // Discard those ambiguous entries instead of risking cross-role disclosure.
     notifications: (raw.notifications || []).filter((item) => Boolean(item.recipientRole)),
     cart: raw.cart || [],
+    wishlist: raw.wishlist || [],
     tickets: raw.tickets || [],
     transactions: raw.transactions || [],
     staffAccounts: raw.staffAccounts || [],
@@ -1066,7 +1067,15 @@ export function ShePlatesV3() {
       {content}
       {!notificationsOpen && <CustomerBottomNav active={active} onNavigate={(key) => { setActive(key); setCustomerMenuOpen(false); }} onAgent={() => setAgentOpen(true)} />}
       {customerMenuOpen && <button className="fixed inset-0 z-30 hidden md:block" onClick={() => setCustomerMenuOpen(false)} aria-label="Close account menu" />}
-      <VendorProfileDialog vendorId={vendorProfileId} onClose={() => setVendorProfileId(null)} state={state} social={social} profile={{ latitude: customer?.latitude, longitude: customer?.longitude, address: customer?.address }} onAdd={(product) => { void addProductToCart(state, setState, session, product); setVendorProfileId(null); setActive("Cart"); }} onPlan={(product) => setPlanProduct(product)} onClaimDrop={claimDrop} shorts={vendorProfileId ? shorts.forVendor(vendorProfileId, 30) : []} onOpenShorts={openShorts} />
+      <VendorProfileDialog vendorId={vendorProfileId} onClose={() => setVendorProfileId(null)} state={state} customerEmail={session.email} social={social} profile={{ latitude: customer?.latitude, longitude: customer?.longitude, address: customer?.address }} onAdd={(product) => { void addProductToCart(state, setState, session, product); setVendorProfileId(null); setActive("Cart"); }} onPlan={(product) => setPlanProduct(product)} onToggleWishlist={(product) => setState((current) => {
+        const alreadySaved = current.wishlist.some((item) => item.customerEmail === session.email && item.productId === product.id);
+        return {
+          ...current,
+          wishlist: alreadySaved
+            ? current.wishlist.filter((item) => !(item.customerEmail === session.email && item.productId === product.id))
+            : [{ customerEmail: session.email, productId: product.id, addedAt: new Date().toISOString() }, ...current.wishlist],
+        };
+      })} onClaimDrop={claimDrop} shorts={vendorProfileId ? shorts.forVendor(vendorProfileId, 30) : []} onOpenShorts={openShorts} />
       {shortsViewer.state && <ShortsViewer shorts={shortsViewer.state.shorts} startIndex={shortsViewer.state.start} liked={shorts.liked} onLike={(id) => void shorts.toggleLike(id).catch((e) => toast.error(e instanceof Error ? e.message : "Could not save your like"))} onView={shorts.recordView} onOpenVendor={setVendorProfileId} onClose={shortsViewer.close} />}
       <ScheduleDialog product={planProduct} close={() => setPlanProduct(null)} session={session} state={state} setState={setState} initialStartDate={tomorrow()} onCreated={() => { setVendorProfileId(null); setActive("Cart"); }} />
     </main> : <div className="mx-auto flex max-w-425 gap-0 lg:gap-4">
@@ -1552,7 +1561,47 @@ function Marketplace({ session, state, setState, navigate, openAgent, openVendor
 
 
     <section><div className="flex flex-wrap items-end justify-between gap-3"><Heading eyebrow="MARKETPLACE" title={`${visible.length} option${visible.length === 1 ? "" : "s"} · ${deliveryDate}${periodDays > 1 ? ` to ${periodEndDate}` : ""}`} body="Verified, open and serviceable vendors only. Use search and filters for budget, calories, protein, dietary preferences and your planning window. Current stock is shown; final slot capacity is confirmed when you schedule." /><Button variant="outline" onClick={() => void refreshMarketplace(true)} disabled={refreshing || !isLiveSupabaseMode()} className="rounded-xl"><RefreshCcw className={refreshing ? "animate-spin" : ""} />Refresh</Button></div>{catalogueError && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{catalogueError}</div>}
-      <div data-tour="products" className="sp-market-grid mt-5 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">{visible.map((product) => { const vendor = state.vendors.find((v) => v.id === product.vendorId)!; const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude); const personalized = preferenceScore(product) > 5; const fulfilmentLabel = vendor.delivery && vendor.pickup ? "Delivery & pickup" : vendor.pickup ? "Pickup only" : "Delivery only"; const isWishlisted = state.wishlist.some((w) => w.customerEmail === session.email && w.productId === product.id); const rating = productRating(product.id, state.reviews); return <article key={product.id} className="sp-product-card group rounded-[28px] p-4"><div className="sp-product-image relative grid h-36 place-items-center overflow-hidden rounded-[22px]" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>{product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover transition group-hover:scale-[1.03]" /> : <ProductGlyph category={product.category} iconClassName="size-12" />}{personalized && <span className="absolute left-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-black text-[#50772a] shadow"><Sparkles className="mr-1 inline size-3" />For you</span>}<button type="button" onClick={() => setState((s) => ({ ...s, wishlist: isWishlisted ? s.wishlist.filter((w) => !(w.customerEmail === session.email && w.productId === product.id)) : [{ customerEmail: session.email, productId: product.id, addedAt: new Date().toISOString() }, ...s.wishlist] }))} aria-label={isWishlisted ? "Remove from wishlist" : "Save to wishlist"} className="absolute right-3 top-3 grid size-8 place-items-center rounded-full bg-white/95 shadow transition hover:scale-110"><Heart className={`size-4 ${isWishlisted ? "fill-[#e0455f] text-[#e0455f]" : "text-stone-400"}`} /></button></div><div className="mt-4 flex items-start justify-between gap-2"><div><h3 className="font-black">{product.name}</h3><p className="mt-1 text-xs text-stone-500">{vendor.businessName} · {product.baseUnit}</p>{rating && <p className="mt-1 flex items-center gap-1"><StarRow value={rating.average} size="size-3" /><span className="text-[11px] font-bold text-stone-500">{rating.average.toFixed(1)} ({rating.count})</span></p>}<div className="mt-1"><TasteMatchBadge state={state} setState={setState} session={session} product={product} /></div><p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[#5ba400]"><span>{distance?.toFixed(1)} km {vendor.pickup && !vendor.delivery ? "to pick up" : "away"}</span><span className="text-stone-300">·</span><span className={vendor.pickup && !vendor.delivery ? "text-amber-700" : ""}>{fulfilmentLabel}</span></p></div><BadgeCheck className="size-5 shrink-0 text-[#5ba400]" /></div><div className="mt-3 flex flex-wrap gap-1">{product.nutritionStatus === "Pending review" || product.calories <= 0 ? <Status className="border-amber-200 bg-amber-50 text-amber-800">Nutrition pending</Status> : <><Status>{product.calories} kcal</Status><Status>{product.protein}g protein</Status></>}{product.dietaryTags.slice(0, 2).map((tag) => <Status key={tag}>{tag}</Status>)}</div><div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-lg font-black sm:text-xl">{money(finalPrice(product, state))}</div><div className="text-[10px] text-stone-500 sm:text-xs">per pack</div></div><div className="sp-card-actions flex min-w-0 gap-1.5 sm:gap-2"><Button size="sm" variant="outline" onClick={() => addToCart(product)} className="min-w-0 flex-1 rounded-xl px-2 sm:px-3"><ShoppingCart /><span>Add</span></Button><Button size="sm" onClick={() => openProduct(product)} className="min-w-0 flex-1 rounded-xl bg-[#ef3d3d] px-2 hover:bg-[#d92f2f] sm:px-3"><CalendarDays /><span>Plan</span></Button></div></div></article>; })}</div>
+      <div data-tour="products" className="sp-market-grid mt-5 grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">{visible.map((product) => {
+        const vendor = state.vendors.find((v) => v.id === product.vendorId)!;
+        const distance = product.liveDistanceKm ?? distanceKm(profile.latitude, profile.longitude, vendor.latitude, vendor.longitude);
+        const personalized = preferenceScore(product) > 5;
+        const fulfilmentLabel = vendor.delivery && vendor.pickup ? "Delivery & pickup" : vendor.pickup ? "Pickup only" : "Delivery only";
+        const isWishlisted = state.wishlist.some((w) => w.customerEmail === session.email && w.productId === product.id);
+        const rating = productRating(product.id, state.reviews);
+        return <article key={product.id} className="sp-product-card group rounded-[28px] p-4">
+          <div className="sp-product-image relative grid h-36 place-items-center overflow-hidden rounded-[22px]" style={{ background: product.imageUrl ? undefined : categoryVisual(product.category).bg }}>
+            {product.imageUrl ? <img src={product.imageUrl} alt={product.name} className="h-full w-full object-cover transition group-hover:scale-[1.03]" /> : <ProductGlyph category={product.category} iconClassName="size-12" />}
+            {personalized && <span className="absolute left-3 top-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-black text-[#50772a] shadow"><Sparkles className="mr-1 inline size-3" />For you</span>}
+          </div>
+          <div className="mt-4 flex items-start justify-between gap-2">
+            <div><h3 className="font-black">{product.name}</h3><p className="mt-1 text-xs text-stone-500">{vendor.businessName} · {product.baseUnit}</p>
+              {rating && <p className="mt-1 flex items-center gap-1"><StarRow value={rating.average} size="size-3" /><span className="text-[11px] font-bold text-stone-500">{rating.average.toFixed(1)} ({rating.count})</span></p>}
+              <div className="mt-1"><TasteMatchBadge state={state} setState={setState} session={session} product={product} /></div>
+              <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[#5ba400]"><span>{distance?.toFixed(1)} km {vendor.pickup && !vendor.delivery ? "to pick up" : "away"}</span><span className="text-stone-300">·</span><span className={vendor.pickup && !vendor.delivery ? "text-amber-700" : ""}>{fulfilmentLabel}</span></p>
+            </div>
+            <BadgeCheck className="size-5 shrink-0 text-[#5ba400]" />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1">
+            {product.nutritionStatus === "Pending review" || product.calories <= 0 ? <Status className="border-amber-200 bg-amber-50 text-amber-800">Nutrition pending</Status> : <><Status>{product.calories} kcal</Status><Status>{product.protein}g protein</Status></>}
+            {product.dietaryTags.slice(0, 2).map((tag) => <Status key={tag}>{tag}</Status>)}
+          </div>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div><div className="text-lg font-black sm:text-xl">{money(finalPrice(product, state))}</div><div className="text-[10px] text-stone-500 sm:text-xs">per pack</div></div>
+            <div className="sp-card-actions flex min-w-0 gap-1.5 sm:gap-2">
+              <Button size="sm" variant="outline" onClick={() => addToCart(product)} className="min-w-0 flex-1 rounded-xl px-2 sm:px-3"><ShoppingCart /><span>Add</span></Button>
+              <Button size="sm" onClick={() => openProduct(product)} className="min-w-0 flex-1 rounded-xl bg-[#ef3d3d] px-2 hover:bg-[#d92f2f] sm:px-3"><CalendarDays /><span>Plan</span></Button>
+            </div>
+          </div>
+          <button type="button" onClick={() => setState((s) => ({
+            ...s,
+            wishlist: isWishlisted
+              ? s.wishlist.filter((w) => !(w.customerEmail === session.email && w.productId === product.id))
+              : [{ customerEmail: session.email, productId: product.id, addedAt: new Date().toISOString() }, ...s.wishlist],
+          }))} aria-label={isWishlisted ? "Remove from wishlist" : "Save to wishlist"} aria-pressed={isWishlisted} className="mt-2 inline-flex min-h-9 items-center gap-1.5 rounded-full px-2 text-xs font-bold text-stone-500 transition hover:bg-rose-50 hover:text-rose-700">
+            <Heart className={`size-4 ${isWishlisted ? "fill-[#e0455f] text-[#e0455f]" : ""}`} />{isWishlisted ? "Saved to wishlist" : "Wishlist"}
+          </button>
+        </article>;
+      })}</div>
       {!visible.length && (locationConfirmed ? <div className="mt-5 space-y-4"><Empty icon={Store} title="No matching products" body={serviceable.length ? "Your filters are narrowing the currently serviceable marketplace. Clear one or more filters, or ask She Agent for alternatives." : emptyReason} action={serviceable.length ? <Button onClick={() => { setMaxPrice(0); setMaxCalories(0); setMinProtein(0); setDietary("All"); setCategory("All"); setQuery(""); }} variant="outline" className="rounded-xl">Clear marketplace filters</Button> : undefined} /><div className="grid gap-3 sm:grid-cols-5">{diagnostics && [["Verified", diagnostics.verified_vendors], ["Open", diagnostics.open_vendors], ["With stock", diagnostics.vendors_with_products], ["In radius", diagnostics.vendors_in_radius], ["Products", diagnostics.serviceable_products]].map(([label, value]) => <div key={String(label)} className="surface-card rounded-2xl p-3 text-center"><div className="text-xl font-black">{value}</div><div className="text-xs text-stone-500">{label}</div></div>)}</div></div> : <Empty icon={LocateFixed} title="Confirm your actual location first" body="Products are hidden until GPS or a searched address creates a real service pin." action={<Button onClick={() => setLocationOpen(true)} className="rounded-xl bg-[#5ba400]"><LocateFixed />Detect my location</Button>} />)}
     </section>
 

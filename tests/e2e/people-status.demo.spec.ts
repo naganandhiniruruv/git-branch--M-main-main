@@ -7,6 +7,7 @@ import { buildDemoState, DEMO_CUSTOMER } from "./fixtures/demo-state";
 
 const CUSTOMER = { email: DEMO_CUSTOMER.email, name: DEMO_CUSTOMER.name, role: "customer", toursCompleted: ["customer_v1"] };
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+const RED_SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#e0194f"/></svg>');
 
 async function openAs(page: Page, extra: Record<string, unknown> = {}, session: Record<string, unknown> = CUSTOMER) {
   const state = buildDemoState();
@@ -61,7 +62,8 @@ test.describe("Statuses: one-time view, gone after 24 hours (demo data)", () => 
     await page.getByRole("button", { name: "Add status", exact: true }).first().click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByText(/disappears after 24 hours and each person can watch it once/)).toBeVisible();
-    await dialog.getByLabel("Choose a photo").setInputFiles({ name: "thali.png", mimeType: "image/png", buffer: PNG });
+    await dialog.getByLabel("Choose a photo").setInputFiles({ name: "thali.svg", mimeType: "image/svg+xml", buffer: RED_SVG });
+    await expect(dialog.getByRole("img", { name: "Preview of your photo" })).toBeVisible();
     await dialog.getByLabel("Status caption").fill("Sunday thali");
     await dialog.getByLabel("Tag a vendor").selectOption("v-meena");
     await dialog.getByRole("button", { name: "Post status" }).click();
@@ -70,6 +72,20 @@ test.describe("Statuses: one-time view, gone after 24 hours (demo data)", () => 
     await page.getByTestId("my-status").click();
     const viewer = page.getByRole("dialog", { name: "Your status", exact: true });
     await expect(viewer.getByTestId("status-caption")).toHaveText("Sunday thali");
+    const photo = viewer.getByRole("img", { name: "Customer status photo" });
+    await expect(photo).toBeVisible();
+    await expect.poll(() => photo.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    const centerPixel = await photo.evaluate((image: HTMLImageElement) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Canvas is unavailable");
+      context.drawImage(image, 0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data];
+    });
+    expect(centerPixel[0]).toBeGreaterThan(150);
+    expect(centerPixel[1]).toBeLessThan(100);
     await expect(viewer.getByText(/2\dh left|1h left|2[0-4]h left/).first()).toBeVisible();
     await expect(viewer.getByTestId("status-views")).toContainText("0 views");
     await expect(viewer.getByText("Meena's Home Kitchen")).toBeVisible();

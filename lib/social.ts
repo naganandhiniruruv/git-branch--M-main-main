@@ -101,7 +101,11 @@ export async function compressImage(file: File, maxDim = 1080, quality = 0.82): 
   const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
-  canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Your browser could not prepare this photo.");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", quality);
 }
 

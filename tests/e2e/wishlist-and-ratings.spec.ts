@@ -12,8 +12,10 @@ test.describe("Wishlist", () => {
     const productName = (await firstCard.locator("h3").first().textContent())?.trim();
     const saveButton = firstCard.getByRole("button", { name: "Save to wishlist" });
     await expect(saveButton).toBeVisible();
+    await expect(saveButton).toHaveAttribute("aria-pressed", "false");
     await saveButton.click();
     await expect(firstCard.getByRole("button", { name: "Remove from wishlist" })).toBeVisible();
+    await expect(firstCard.getByRole("button", { name: "Remove from wishlist" })).toHaveAttribute("aria-pressed", "true");
 
     const accountTrigger = page.locator('[data-tour="account"]:visible, [data-tour="account-mobile"]:visible').first();
     await accountTrigger.click();

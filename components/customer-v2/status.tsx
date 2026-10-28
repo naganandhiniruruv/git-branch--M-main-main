@@ -4,7 +4,6 @@
 // watch it once. Nothing here is a permanent gallery.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import Image from "next/image";
 import { Eye, Heart, MapPin, Plus, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -68,6 +67,7 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
   const [progress, setProgress] = useState(0);
   const [seenBy, setSeenBy] = useState<StatusViewer[] | null>(null);
   const [likedHere, setLikedHere] = useState<Record<string, boolean>>({});
+  const [failedPhotoId, setFailedPhotoId] = useState<string | null>(null);
   const video = useRef<HTMLVideoElement>(null);
   const count = items.length;
   const current = items[index];
@@ -108,7 +108,8 @@ export function StatusViewer({ items, own, onClose, onViewed, onLike, onDelete, 
     <div className="relative h-full w-full max-w-[460px] overflow-hidden bg-[#1b1712]">
       {current.kind === "video" && current.mediaUrl
         ? <video key={current.id} ref={video} src={current.mediaUrl} poster={current.thumbUrl} autoPlay muted={muted} playsInline onEnded={advance} onTimeUpdate={(e) => setProgress(e.currentTarget.duration ? e.currentTarget.currentTime / e.currentTarget.duration : 0)} className="h-full w-full object-cover" />
-        : current.mediaUrl ? <Image key={current.id} src={current.mediaUrl} alt="" fill unoptimized sizes="460px" className="object-cover" />
+        : current.mediaUrl && failedPhotoId !== current.id ? <img key={current.id} src={current.mediaUrl} alt="Customer status photo" onError={() => setFailedPhotoId(current.id)} className="absolute inset-0 h-full w-full bg-black object-contain" />
+        : current.mediaUrl ? <div role="alert" className="grid h-full w-full place-items-center bg-stone-950 px-8 text-center text-sm font-bold text-white">This status photo could not be loaded.</div>
         : <div className="grid h-full w-full place-items-center bg-gradient-to-br from-[#3a1220] via-[#5a1a31] to-[#1a0a10]"><span className="text-[120px]" aria-hidden>{current.emoji || "🍽️"}</span>{current.sample && <span className="absolute left-1/2 top-28 -translate-x-1/2 rounded-full bg-white/90 px-3 py-1 text-[11px] font-black text-stone-800">Sample status</span>}</div>}
       <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/65 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))]">
         <div className="flex gap-1" aria-hidden>{items.map((s, i) => <span key={s.id} className="h-[3px] flex-1 overflow-hidden rounded-full bg-white/35"><span className="block h-full bg-white" style={{ width: i < index ? "100%" : i === index ? `${progress * 100}%` : "0%" }} /></span>)}</div>
@@ -170,7 +171,7 @@ export function StatusComposer({ open, onClose, onPost, vendors }: {
       <label htmlFor="status-video" className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border border-dashed border-stone-300 p-5 text-sm font-black transition hover:border-[#e0194f]"><span className="text-3xl" aria-hidden>🎬</span>Video, up to 30 s</label>
       {checking && <p className="col-span-2 text-sm font-bold text-stone-500" role="status">Checking your file…</p>}
     </div>
-    : <div className="overflow-hidden rounded-2xl bg-black">{isVideo ? <video src={preview} controls playsInline muted className="max-h-72 w-full object-contain" aria-label="Preview of your video" /> : <Image src={preview} alt="Preview of your photo" width={640} height={480} unoptimized className="max-h-72 w-full object-contain" />}</div>}
+    : <div className="overflow-hidden rounded-2xl bg-black">{isVideo ? <video src={preview} controls playsInline muted className="max-h-72 w-full object-contain" aria-label="Preview of your video" /> : <img src={preview} alt="Preview of your photo" className="max-h-72 w-full object-contain" />}</div>}
     {file && <>
       <label className="block text-xs font-black uppercase tracking-[.1em] text-stone-500">Caption (optional)<textarea value={caption} onChange={(e) => setCaption(e.target.value)} maxLength={200} rows={2} aria-label="Status caption" placeholder="What are you eating?" className="mt-1.5 w-full rounded-xl border border-stone-200 p-3 text-sm font-medium normal-case tracking-normal text-stone-800 outline-none focus:border-[#e0194f]" /></label>
       <label className="block text-xs font-black uppercase tracking-[.1em] text-stone-500">Tag a vendor (optional)<select value={vendorId} onChange={(e) => setVendorId(e.target.value)} aria-label="Tag a vendor" className="mt-1.5 h-11 w-full rounded-xl border border-stone-200 bg-white px-3 text-sm font-bold normal-case tracking-normal text-stone-800"><option value="">No vendor</option>{vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</select></label>
