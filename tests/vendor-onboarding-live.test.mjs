@@ -10,6 +10,15 @@ test("a vendor who applies in live mode is saved to the database, not only to th
   assert.match(onboarding, /vendorId = await submitLiveVendorApplication\(/);
 });
 
+test("completing the product tour does not restart live profile sync", () => {
+  const syncStart = app.indexOf("if (!hydrated || !syncSession) return;");
+  const syncEnd = app.indexOf("}, [hydrated, syncSession, syncVersion]);", syncStart);
+  assert.notEqual(syncStart, -1);
+  assert.notEqual(syncEnd, -1);
+  assert.doesNotMatch(app.slice(syncStart, syncEnd), /\bsession\./);
+  assert.match(app, /const syncSession = useMemo\(\(\) => \{\s*if \(!syncEmail \|\| !syncName \|\| !syncRole\) return null;/);
+});
+
 test("customers have no Cancel button; Operations keeps the cancellation queue for Support-led changes", () => {
   assert.doesNotMatch(app, /onClick=\{\(\) => cancel\(order\)\}/);
   assert.doesNotMatch(app, /change\(schedule, "cancel"\)/);

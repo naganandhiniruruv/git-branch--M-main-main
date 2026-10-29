@@ -1,1091 +1,550 @@
--- ShePlates: everything still to run for P0 Connect, the four vendor plans and once-a-day Food Drops.
--- Run this whole file once in the Supabase SQL editor. It is safe to run again.
---
---   Part 1  P0 Connect foundation (WhatsApp columns and click log)       [already applied in part; harmless to repeat]
---   Part 2  P0 Connect vendor lifecycle: staff-managed listings, permissions, approval, cancel, upgrade invitations
---   Part 3  Plans Taster / Crave / Thrive / Crown and Food Drops that last one evening
---
--- Each part is its own transaction: if a part fails, it changes nothing and the error says why.
-
--- ===================================================================== Part 1
-BEGIN;
-
--- Add Connect fields to existing vendors.
-ALTER TABLE public.vendors
-  ADD COLUMN IF NOT EXISTS whatsapp_number text,
-  ADD COLUMN IF NOT EXISTS operating_hours jsonb;
-
-COMMENT ON COLUMN public.vendors.whatsapp_number IS
-  'Vendor WhatsApp contact in international format, without URL encoding.';
-
-COMMENT ON COLUMN public.vendors.operating_hours IS
-  'Structured weekly business hours; format will be validated by the application.';
-
--- Store WhatsApp contact-button click events.
-CREATE TABLE IF NOT EXISTS public.vendor_whatsapp_click_events (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  vendor_id uuid NOT NULL
-    REFERENCES public.vendors(id) ON DELETE CASCADE,
-  customer_id uuid
-    REFERENCES public.profiles(id) ON DELETE SET NULL,
-  source text NOT NULL
-    CHECK (source IN ('map', 'vendor_profile', 'search')),
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-
--- Support analytics queries by vendor and date.
-CREATE INDEX IF NOT EXISTS
-  idx_vendor_whatsapp_click_events_vendor_created
-ON public.vendor_whatsapp_click_events (
-  vendor_id,
-  created_at DESC
-);
-
-CREATE INDEX IF NOT EXISTS
-  idx_vendor_whatsapp_click_events_source_created
-ON public.vendor_whatsapp_click_events (
-  source,
-  created_at DESC
-);
-
--- Block direct client access to analytics records.
-ALTER TABLE public.vendor_whatsapp_click_events
-  ENABLE ROW LEVEL SECURITY;
-
-REVOKE ALL
-ON TABLE public.vendor_whatsapp_click_events
-FROM PUBLIC, anon, authenticated;
-
-COMMIT;
-
--- ===================================================================== Part 2
--- P0 Connect vendors are staff-managed directory records, not subscription accounts.
--- Apply only after reviewing the deployed schema and confirming migrations 001-004,
--- V3_UPGRADE.sql, V4_UPGRADE.sql, and V7.7_MARKETPLACE_NEARBY_RETURN_PLAN.sql
--- have been applied in the target environment.
-BEGIN;
-
-DO $preflight$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='vendors' AND column_name='whatsapp_number'
-  ) OR NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='vendors' AND column_name='logo_url'
-  ) OR NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='vendors' AND column_name='operating_hours'
-  ) OR NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='vendors' AND column_name='address'
-  ) OR NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='vendors' AND column_name='store_open_today'
-  ) OR to_regclass('public.vendor_whatsapp_click_events') IS NULL
-     OR to_regclass('public.vendor_documents') IS NULL
-     OR to_regclass('public.vendor_plans') IS NULL
-     OR to_regclass('public.audit_logs') IS NULL
-     OR to_regclass('public.notifications') IS NULL
-     OR NOT EXISTS (
-       SELECT 1 FROM pg_proc procedure
-       WHERE procedure.pronamespace='public'::regnamespace
-         AND procedure.proname='marketplace_menu_nearby'
-         AND procedure.proargtypes='701 701'::oidvector
-  ) THEN
-    RAISE EXCEPTION 'P0 migration prerequisites are missing: verify the Connect foundation, storefront schema, and V7.7 marketplace RPC first';
-  END IF;
-  IF EXISTS (SELECT 1 FROM public.vendors WHERE owner_id IS NULL) THEN
-    RAISE EXCEPTION 'P0 migration stopped: existing unowned vendor rows require a reviewed classification before applying the ownership constraint';
-  END IF;
-END
-$preflight$;
-
-ALTER TABLE public.vendors
-  ALTER COLUMN owner_id DROP NOT NULL,
-  ADD COLUMN IF NOT EXISTS vendor_kind text NOT NULL DEFAULT 'subscription',
-  ADD COLUMN IF NOT EXISTS connect_enabled boolean NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS p0_created_by uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
-  ADD COLUMN IF NOT EXISTS p0_cancelled_at timestamptz,
-  ADD COLUMN IF NOT EXISTS p0_contact_name text,
-  ADD COLUMN IF NOT EXISTS p0_contact_phone text,
-  ADD COLUMN IF NOT EXISTS p0_fssai_required boolean NOT NULL DEFAULT false;
-
-DO $constraints$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='vendors_kind_check' AND conrelid='public.vendors'::regclass) THEN
-    ALTER TABLE public.vendors ADD CONSTRAINT vendors_kind_check
-      CHECK (vendor_kind IN ('subscription','p0_connect'));
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='vendors_kind_owner_plan_check' AND conrelid='public.vendors'::regclass) THEN
-    ALTER TABLE public.vendors ADD CONSTRAINT vendors_kind_owner_plan_check
-      CHECK (
-        (vendor_kind='p0_connect' AND owner_id IS NULL AND plan_id IS NULL)
-        OR (vendor_kind='subscription' AND owner_id IS NOT NULL)
-      );
-  END IF;
-END
-$constraints$;
-
-COMMENT ON COLUMN public.vendors.vendor_kind IS
-  'Separates staff-managed P0 Connect listings from subscription vendors; existing rows remain subscription by default.';
-COMMENT ON COLUMN public.vendors.p0_created_by IS
-  'Immutable P0 creator identity used to prevent self-approval.';
-COMMENT ON COLUMN public.vendors.p0_cancelled_at IS
-  'P0 cancellation marker; operational_status remains the existing inactive enum value.';
-COMMENT ON COLUMN public.vendors.p0_fssai_required IS
-  'Operations-selected conditional certificate requirement for this P0 vendor.';
-
-CREATE OR REPLACE FUNCTION public.guard_profile_privileges()
-RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-BEGIN
-  IF auth.uid() IS NOT NULL AND NEW.vendor_id IS DISTINCT FROM OLD.vendor_id
-     AND NEW.vendor_id IS NOT NULL
-     AND EXISTS (
-       SELECT 1 FROM public.vendors vendor
-       WHERE vendor.id=NEW.vendor_id AND vendor.vendor_kind='p0_connect'
-     ) THEN
-    RAISE EXCEPTION 'P0 ownership must be established through the authorized upgrade flow';
-  END IF;
-  IF auth.uid() IS NOT NULL AND public.current_app_role()<>'admin' THEN
-    NEW.role:=OLD.role;
-    IF NOT (
-      OLD.role='vendor' AND OLD.vendor_id IS NULL AND NEW.vendor_id IS NOT NULL
-      AND EXISTS (
-        SELECT 1 FROM public.vendors vendor
-        WHERE vendor.id=NEW.vendor_id AND vendor.vendor_kind='subscription'
-          AND vendor.owner_id=auth.uid()
-      )
-    ) THEN
-      NEW.vendor_id:=OLD.vendor_id;
-    END IF;
-  END IF;
-  RETURN NEW;
-END
-$function$;
-
-CREATE TABLE IF NOT EXISTS public.p0_vendor_permissions (
-  profile_id uuid PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
-  can_create boolean NOT NULL DEFAULT false,
-  can_review boolean NOT NULL DEFAULT false,
-  can_cancel boolean NOT NULL DEFAULT false,
-  can_reactivate boolean NOT NULL DEFAULT false,
-  can_upgrade boolean NOT NULL DEFAULT false,
-  can_upload boolean NOT NULL DEFAULT false,
-  assigned_by uuid NOT NULL REFERENCES public.profiles(id),
-  assigned_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.p0_upgrade_invitations (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  vendor_id uuid NOT NULL REFERENCES public.vendors(id),
-  invited_email text NOT NULL,
-  plan_id uuid NOT NULL REFERENCES public.vendor_plans(id),
-  invited_by uuid NOT NULL REFERENCES public.profiles(id),
-  provider_user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  status text NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending','sent','claim_pending','delivery_failed','revoked','expired','completed')),
-  expires_at timestamptz NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS p0_one_live_upgrade_invitation
-  ON public.p0_upgrade_invitations(vendor_id)
-  WHERE status IN ('pending','sent','claim_pending','delivery_failed');
-
-CREATE TABLE IF NOT EXISTS public.p0_vendor_history (
-  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  vendor_id uuid NOT NULL REFERENCES public.vendors(id),
-  historical_whatsapp_number text NOT NULL,
-  reason text NOT NULL,
-  recorded_by uuid NOT NULL REFERENCES public.profiles(id),
-  recorded_at timestamptz NOT NULL DEFAULT now()
-);
-
-ALTER TABLE public.p0_vendor_permissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.p0_upgrade_invitations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.p0_vendor_history ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.p0_vendor_permissions, public.p0_upgrade_invitations, public.p0_vendor_history
-  FROM PUBLIC, anon, authenticated;
-
-CREATE OR REPLACE FUNCTION public.p0_actor_can(p_actor uuid, p_action text)
-RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-  SELECT EXISTS (
-    SELECT 1
-    FROM public.profiles AS profile
-    WHERE profile.id=p_actor
-      AND (
-        profile.role='admin'
-        OR (
-          profile.role='operations'
-          AND EXISTS (
-            SELECT 1
-            FROM public.p0_vendor_permissions AS permission
-            WHERE permission.profile_id=profile.id
-              AND CASE p_action
-                WHEN 'create' THEN permission.can_create
-                WHEN 'review' THEN permission.can_review
-                WHEN 'cancel' THEN permission.can_cancel
-                WHEN 'reactivate' THEN permission.can_reactivate
-                WHEN 'upgrade' THEN permission.can_upgrade
-                WHEN 'upload' THEN permission.can_upload
-                ELSE false
-              END
-          )
-        )
-      )
-  )
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_current_actor_can(p_action text)
-RETURNS boolean
-LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-  SELECT public.p0_actor_can(auth.uid(),p_action)
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_set_operations_permissions(
-  p_actor uuid,
-  p_operations_profile uuid,
-  p_permissions jsonb
-)
-RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  previous_permissions jsonb;
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE id=p_actor AND role='admin') THEN
-    RAISE EXCEPTION 'Only Super Admin may assign P0 Operations permissions';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE id=p_operations_profile AND role='operations') THEN
-    RAISE EXCEPTION 'P0 permissions can only be assigned to an Operations account';
-  END IF;
-
-  SELECT to_jsonb(permission) INTO previous_permissions
-  FROM public.p0_vendor_permissions AS permission
-  WHERE permission.profile_id=p_operations_profile;
-
-  INSERT INTO public.p0_vendor_permissions (
-    profile_id, can_create, can_review, can_cancel, can_reactivate, can_upgrade, can_upload, assigned_by, assigned_at
-  )
-  VALUES (
-    p_operations_profile,
-    coalesce((p_permissions->>'can_create')::boolean,false),
-    coalesce((p_permissions->>'can_review')::boolean,false),
-    coalesce((p_permissions->>'can_cancel')::boolean,false),
-    coalesce((p_permissions->>'can_reactivate')::boolean,false),
-    coalesce((p_permissions->>'can_upgrade')::boolean,false),
-    coalesce((p_permissions->>'can_upload')::boolean,false),
-    p_actor,
-    now()
-  )
-  ON CONFLICT (profile_id) DO UPDATE SET
-    can_create=excluded.can_create,
-    can_review=excluded.can_review,
-    can_cancel=excluded.can_cancel,
-    can_reactivate=excluded.can_reactivate,
-    can_upgrade=excluded.can_upgrade,
-    can_upload=excluded.can_upload,
-    assigned_by=excluded.assigned_by,
-    assigned_at=excluded.assigned_at;
-
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,before_data,after_data)
-  VALUES (
-    p_actor,'admin','p0_permissions_updated','profile',p_operations_profile::text,
-    previous_permissions,
-    (SELECT to_jsonb(permission) FROM public.p0_vendor_permissions AS permission WHERE permission.profile_id=p_operations_profile)
-  );
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_create_vendor(
-  p_actor uuid,
-  p_name text,
-  p_category text,
-  p_description text,
-  p_locality text,
-  p_address text,
-  p_latitude double precision,
-  p_longitude double precision,
-  p_service_radius_km numeric,
-  p_contact_name text,
-  p_contact_phone text,
-  p_whatsapp_number text,
-  p_fssai_required boolean DEFAULT false,
-  p_logo_url text DEFAULT NULL,
-  p_operating_hours jsonb DEFAULT NULL
-)
-RETURNS uuid
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  created_vendor uuid;
-  duration_hours numeric;
-BEGIN
-  IF NOT public.p0_actor_can(p_actor,'create') THEN
-    RAISE EXCEPTION 'Not authorized to create P0 vendors';
-  END IF;
-  IF coalesce(trim(p_name),'')='' OR coalesce(trim(p_category),'')='' OR coalesce(trim(p_locality),'')='' THEN
-    RAISE EXCEPTION 'Business name, category and locality are required';
-  END IF;
-  IF p_latitude IS NULL OR p_longitude IS NULL OR p_latitude NOT BETWEEN -90 AND 90 OR p_longitude NOT BETWEEN -180 AND 180 THEN
-    RAISE EXCEPTION 'Valid vendor coordinates are required';
-  END IF;
-  IF p_service_radius_km IS NULL OR p_service_radius_km NOT BETWEEN 0.5 AND 100 THEN
-    RAISE EXCEPTION 'Service radius must be between 0.5 and 100 km';
-  END IF;
-  IF coalesce(trim(p_contact_name),'')='' OR coalesce(trim(p_contact_phone),'')='' THEN
-    RAISE EXCEPTION 'P0 contact name and phone are required';
-  END IF;
-  IF p_whatsapp_number !~ '^\+[1-9][0-9]{7,14}$' THEN
-    RAISE EXCEPTION 'WhatsApp number must be normalized to international format';
-  END IF;
-  BEGIN
-    duration_hours := (p_operating_hours->>'duration_hours')::numeric;
-  EXCEPTION WHEN invalid_text_representation THEN
-    RAISE EXCEPTION 'Operating duration must be between 1 and 24 hours';
-  END;
-  IF duration_hours IS NULL OR duration_hours NOT BETWEEN 1 AND 24 THEN
-    RAISE EXCEPTION 'Operating duration must be between 1 and 24 hours';
-  END IF;
-
-  INSERT INTO public.vendors(
-    owner_id,plan_id,vendor_kind,p0_created_by,p0_contact_name,p0_contact_phone,p0_fssai_required,
-    name,category,description,locality,address,latitude,longitude,service_radius_km,
-    verification_status,operational_status,marketplace_visible,connect_enabled,whatsapp_number,logo_url,
-    operating_hours,delivery_enabled,pickup_enabled,store_open_today
-  )
-  VALUES (
-    NULL,NULL,'p0_connect',p_actor,trim(p_contact_name),trim(p_contact_phone),coalesce(p_fssai_required,false),
-    trim(p_name),trim(p_category),nullif(trim(p_description),''),trim(p_locality),nullif(trim(p_address),''),
-    p_latitude,p_longitude,p_service_radius_km,'submitted','inactive',false,false,p_whatsapp_number,
-    nullif(trim(p_logo_url),''),jsonb_build_object('duration_hours',duration_hours),false,true,false
-  )
-  RETURNING id INTO created_vendor;
-
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,after_data)
-  SELECT p_actor,profile.role,'p0_vendor_created','vendor',created_vendor::text,
-    jsonb_build_object('vendor_kind','p0_connect','verification_status','submitted','operational_status','inactive','marketplace_visible',false)
-  FROM public.profiles AS profile WHERE profile.id=p_actor;
-  RETURN created_vendor;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_cancel_vendor(p_actor uuid, p_vendor uuid)
-RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  prior_state jsonb;
-  kind text;
-BEGIN
-  IF NOT public.p0_actor_can(p_actor,'cancel') THEN
-    RAISE EXCEPTION 'Not authorized to cancel P0 vendors';
-  END IF;
-  SELECT jsonb_build_object(
-    'id',vendor.id,'vendor_kind',vendor.vendor_kind,'verification_status',vendor.verification_status,
-    'operational_status',vendor.operational_status,'marketplace_visible',vendor.marketplace_visible,
-    'p0_cancelled_at',vendor.p0_cancelled_at
-  ),vendor.vendor_kind INTO prior_state,kind
-  FROM public.vendors AS vendor WHERE vendor.id=p_vendor FOR UPDATE;
-  IF kind IS DISTINCT FROM 'p0_connect' THEN RAISE EXCEPTION 'P0 vendor not found'; END IF;
-
-  UPDATE public.vendors
-  SET operational_status='inactive',marketplace_visible=false,p0_cancelled_at=now(),updated_at=now()
-  WHERE id=p_vendor;
-  UPDATE public.p0_upgrade_invitations
-  SET status='revoked',updated_at=now()
-  WHERE vendor_id=p_vendor AND status IN ('pending','sent','claim_pending','delivery_failed');
-
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,before_data,after_data)
-  SELECT p_actor,profile.role,'p0_vendor_cancelled','vendor',p_vendor::text,prior_state,
-    jsonb_build_object('operational_status','inactive','marketplace_visible',false,'p0_cancelled_at',now())
-  FROM public.profiles AS profile WHERE profile.id=p_actor;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_reactivate_vendor(p_actor uuid, p_vendor uuid)
-RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  prior_state jsonb;
-BEGIN
-  IF NOT public.p0_actor_can(p_actor,'reactivate') THEN
-    RAISE EXCEPTION 'Not authorized to reactivate P0 vendors';
-  END IF;
-  SELECT to_jsonb(vendor) INTO prior_state
-  FROM public.vendors AS vendor
-  WHERE vendor.id=p_vendor AND vendor.vendor_kind='p0_connect' AND vendor.p0_cancelled_at IS NOT NULL
-  FOR UPDATE;
-  IF prior_state IS NULL THEN RAISE EXCEPTION 'Cancelled P0 vendor not found'; END IF;
-  IF EXISTS (
-    SELECT 1 FROM public.vendors AS vendor WHERE vendor.id=p_vendor
-      AND (vendor.verification_status<>'verified' OR vendor.latitude IS NULL OR vendor.longitude IS NULL
-        OR vendor.latitude NOT BETWEEN -90 AND 90 OR vendor.longitude NOT BETWEEN -180 AND 180
-        OR vendor.service_radius_km NOT BETWEEN 0.5 AND 100
-        OR vendor.whatsapp_number !~ '^\+[1-9][0-9]{7,14}$')
-  ) THEN RAISE EXCEPTION 'Vendor must remain verified and have valid location and contact details'; END IF;
-  IF EXISTS (
-    SELECT 1 FROM public.vendors vendor
-    WHERE vendor.id=p_vendor AND vendor.p0_fssai_required
-      AND NOT EXISTS (
-        SELECT 1 FROM public.vendor_documents document
-        WHERE document.vendor_id=vendor.id AND document.document_type='food_certificate'
-          AND document.document_number IS NOT NULL AND document.storage_path IS NOT NULL
-          AND document.expiry_date>=current_date
-      )
-  ) THEN RAISE EXCEPTION 'A current required FSSAI certificate is needed before reactivation'; END IF;
-
-  UPDATE public.vendors
-  SET operational_status='active',marketplace_visible=true,p0_cancelled_at=NULL,connect_enabled=true,updated_at=now()
-  WHERE id=p_vendor;
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,before_data,after_data)
-  SELECT p_actor,profile.role,'p0_vendor_reactivated','vendor',p_vendor::text,prior_state,
-    jsonb_build_object('operational_status','active','marketplace_visible',true,'p0_cancelled_at',NULL)
-  FROM public.profiles AS profile WHERE profile.id=p_actor;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_start_upgrade_invitation(
-  p_actor uuid,
-  p_vendor uuid,
-  p_plan_code text,
-  p_email text
-)
-RETURNS uuid
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  vendor_row public.vendors;
-  selected_plan uuid;
-  invitation_id uuid;
-  normalized_email text := lower(trim(p_email));
-BEGIN
-  IF NOT public.p0_actor_can(p_actor,'upgrade') THEN RAISE EXCEPTION 'Not authorized to upgrade P0 vendors'; END IF;
-  SELECT * INTO vendor_row FROM public.vendors WHERE id=p_vendor FOR UPDATE;
-  IF vendor_row.id IS NULL OR vendor_row.vendor_kind<>'p0_connect' OR vendor_row.owner_id IS NOT NULL THEN
-    RAISE EXCEPTION 'Only an unowned P0 vendor can be upgraded';
-  END IF;
-  IF vendor_row.p0_cancelled_at IS NOT NULL OR vendor_row.verification_status<>'verified'
-     OR vendor_row.operational_status<>'active' OR NOT vendor_row.marketplace_visible THEN
-    RAISE EXCEPTION 'Vendor must be approved, active and not cancelled before upgrade';
-  END IF;
-  IF normalized_email !~ '^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$' THEN
-    RAISE EXCEPTION 'Enter a valid invitation email';
-  END IF;
-  SELECT id INTO selected_plan FROM public.vendor_plans
-  WHERE code=p_plan_code AND active=true AND code IN ('crave','thrive','crown');
-  IF selected_plan IS NULL THEN RAISE EXCEPTION 'Select an active Crave, Thrive or Crown plan'; END IF;
-
-  UPDATE public.p0_upgrade_invitations
-  SET status='expired',updated_at=now()
-  WHERE vendor_id=p_vendor AND status IN ('pending','sent','claim_pending','delivery_failed') AND expires_at<=now();
-
-  SELECT id INTO invitation_id FROM public.p0_upgrade_invitations
-  WHERE vendor_id=p_vendor AND status IN ('pending','sent','claim_pending','delivery_failed') AND expires_at>now()
-  FOR UPDATE;
-  IF invitation_id IS NOT NULL THEN
-    IF NOT EXISTS (
-      SELECT 1 FROM public.p0_upgrade_invitations
-      WHERE id=invitation_id AND invited_email=normalized_email AND plan_id=selected_plan
-    ) THEN RAISE EXCEPTION 'A different upgrade invitation is already pending'; END IF;
-    RETURN invitation_id;
-  END IF;
-
-  INSERT INTO public.p0_upgrade_invitations(vendor_id,invited_email,plan_id,invited_by,expires_at)
-  VALUES(p_vendor,normalized_email,selected_plan,p_actor,now()+interval '7 days')
-  RETURNING id INTO invitation_id;
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,after_data)
-  SELECT p_actor,profile.role,'p0_upgrade_invitation_started','vendor',p_vendor::text,
-    jsonb_build_object('invitation_id',invitation_id,'plan_code',p_plan_code,'invited_email',normalized_email,'expires_at',now()+interval '7 days')
-  FROM public.profiles AS profile WHERE profile.id=p_actor;
-  RETURN invitation_id;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_mark_upgrade_invitation(
-  p_actor uuid,
-  p_invitation uuid,
-  p_delivery_status text,
-  p_provider_user_id uuid DEFAULT NULL
-)
-RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  invitation public.p0_upgrade_invitations;
-  vendor_row public.vendors;
-BEGIN
-  IF p_delivery_status NOT IN ('sent','claim_pending','delivery_failed') THEN RAISE EXCEPTION 'Invalid invitation delivery status'; END IF;
-  SELECT * INTO invitation FROM public.p0_upgrade_invitations WHERE id=p_invitation;
-  IF invitation.id IS NULL THEN RAISE EXCEPTION 'Invitation not found'; END IF;
-  IF NOT public.p0_actor_can(p_actor,'upgrade') THEN RAISE EXCEPTION 'Not authorized to send upgrade invitations'; END IF;
-  SELECT * INTO vendor_row FROM public.vendors WHERE id=invitation.vendor_id FOR UPDATE;
-  SELECT * INTO invitation FROM public.p0_upgrade_invitations WHERE id=p_invitation FOR UPDATE;
-  IF invitation.status NOT IN ('pending','sent','claim_pending','delivery_failed') OR invitation.expires_at<=now()
-     OR vendor_row.vendor_kind<>'p0_connect' OR vendor_row.p0_cancelled_at IS NOT NULL
-     OR vendor_row.operational_status<>'active' OR vendor_row.verification_status<>'verified'
-     OR NOT vendor_row.marketplace_visible THEN
-    RAISE EXCEPTION 'Invitation is no longer eligible for delivery';
-  END IF;
-  UPDATE public.p0_upgrade_invitations
-  SET status=p_delivery_status,provider_user_id=coalesce(p_provider_user_id,provider_user_id),updated_at=now()
-  WHERE id=p_invitation;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.p0_complete_upgrade(p_invitation uuid, p_invitee uuid)
-RETURNS uuid
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  invitation public.p0_upgrade_invitations;
-  vendor_row public.vendors;
-  invitee_email text;
-  invitee_role public.app_role;
-  previous_state jsonb;
-BEGIN
-  SELECT email INTO invitee_email FROM auth.users WHERE id=p_invitee;
-  IF invitee_email IS NULL THEN RAISE EXCEPTION 'Authenticated invitee not found'; END IF;
-  SELECT vendor_id INTO invitation.vendor_id FROM public.p0_upgrade_invitations WHERE id=p_invitation;
-  IF invitation.vendor_id IS NULL THEN RAISE EXCEPTION 'Invitation not found'; END IF;
-  SELECT * INTO vendor_row FROM public.vendors WHERE id=invitation.vendor_id FOR UPDATE;
-  SELECT * INTO invitation FROM public.p0_upgrade_invitations WHERE id=p_invitation FOR UPDATE;
-  SELECT role INTO invitee_role FROM public.profiles WHERE id=p_invitee FOR UPDATE;
-
-  IF invitation.status NOT IN ('sent','claim_pending') OR invitation.expires_at<=now()
-     OR lower(invitation.invited_email)<>lower(invitee_email)
-     OR invitation.provider_user_id IS DISTINCT FROM p_invitee THEN
-    RAISE EXCEPTION 'Invitation is invalid, expired or belongs to another account';
-  END IF;
-  IF invitee_role IS DISTINCT FROM 'vendor'::public.app_role THEN
-    RAISE EXCEPTION 'The invited account is not a vendor account';
-  END IF;
-  IF EXISTS (SELECT 1 FROM public.profiles WHERE id=p_invitee AND vendor_id IS NOT NULL)
-     OR EXISTS (SELECT 1 FROM public.vendors WHERE owner_id=p_invitee) THEN
-    RAISE EXCEPTION 'This account is already linked to a vendor; use the verified ownership-claim process';
-  END IF;
-  IF vendor_row.id IS NULL OR vendor_row.vendor_kind<>'p0_connect' OR vendor_row.owner_id IS NOT NULL
-     OR vendor_row.p0_cancelled_at IS NOT NULL OR vendor_row.verification_status<>'verified'
-     OR vendor_row.operational_status<>'active' OR NOT vendor_row.marketplace_visible THEN
-    RAISE EXCEPTION 'Vendor is no longer eligible for upgrade';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.vendor_plans WHERE id=invitation.plan_id AND active=true) THEN
-    RAISE EXCEPTION 'The selected subscription plan is no longer active';
-  END IF;
-
-  previous_state := jsonb_build_object(
-    'id',vendor_row.id,'vendor_kind',vendor_row.vendor_kind,'plan_id',vendor_row.plan_id,
-    'owner_id',vendor_row.owner_id,'verification_status',vendor_row.verification_status,
-    'operational_status',vendor_row.operational_status,'marketplace_visible',vendor_row.marketplace_visible
-  );
-  IF vendor_row.whatsapp_number IS NOT NULL THEN
-    INSERT INTO public.p0_vendor_history(vendor_id,historical_whatsapp_number,reason,recorded_by)
-    VALUES(vendor_row.id,vendor_row.whatsapp_number,'p0_to_subscription_upgrade',p_invitee);
-  END IF;
-  UPDATE public.vendors
-  SET owner_id=p_invitee,plan_id=invitation.plan_id,vendor_kind='subscription',
-      connect_enabled=false,whatsapp_number=NULL,updated_at=now()
-  WHERE id=vendor_row.id;
-  UPDATE public.profiles SET vendor_id=vendor_row.id,updated_at=now() WHERE id=p_invitee;
-  UPDATE public.p0_upgrade_invitations SET status='completed',updated_at=now() WHERE id=p_invitation;
-
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,before_data,after_data)
-  VALUES(p_invitee,'vendor','p0_vendor_upgraded','vendor',vendor_row.id::text,previous_state,
-    jsonb_build_object('vendor_kind','subscription','plan_id',invitation.plan_id,'owner_id',p_invitee,'connect_enabled',false));
-  RETURN vendor_row.id;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.review_vendor_and_notify(target_vendor uuid, decision text, review_note text DEFAULT NULL)
-RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  owner uuid;
-  creator uuid;
-  vendor_kind_value text;
-  verified boolean;
-  cancelled_at timestamptz;
-  actor uuid := auth.uid();
-BEGIN
-  IF decision NOT IN ('verified','changes_required','rejected','under_review') THEN
-    RAISE EXCEPTION 'Invalid decision';
-  END IF;
-  SELECT owner_id,p0_created_by,vendor_kind,p0_cancelled_at
-    INTO owner,creator,vendor_kind_value,cancelled_at
-  FROM public.vendors WHERE id=target_vendor FOR UPDATE;
-  IF vendor_kind_value IS NULL THEN RAISE EXCEPTION 'Vendor not found'; END IF;
-
-  IF vendor_kind_value='p0_connect' AND cancelled_at IS NOT NULL THEN
-    RAISE EXCEPTION 'Cancelled P0 vendors must be reactivated before review';
-  END IF;
-
-  IF vendor_kind_value='p0_connect' THEN
-    IF NOT public.p0_actor_can(actor,'review') THEN RAISE EXCEPTION 'Not authorized to review P0 vendors'; END IF;
-    IF creator=actor THEN RAISE EXCEPTION 'The P0 creator cannot approve their own vendor'; END IF;
-    IF decision='verified' AND (
-      NOT EXISTS (
-        SELECT 1 FROM public.vendors v
-        WHERE v.id=target_vendor AND v.latitude BETWEEN -90 AND 90 AND v.longitude BETWEEN -180 AND 180
-          AND v.service_radius_km BETWEEN 0.5 AND 100
-          AND v.whatsapp_number ~ '^\+[1-9][0-9]{7,14}$'
-      )
-      OR EXISTS (
-        SELECT 1 FROM public.vendors v
-        WHERE v.id=target_vendor AND v.p0_fssai_required
-          AND NOT EXISTS (
-            SELECT 1 FROM public.vendor_documents d
-            WHERE d.vendor_id=v.id AND d.document_type='food_certificate'
-              AND d.document_number IS NOT NULL AND d.storage_path IS NOT NULL
-              AND d.expiry_date>=current_date
-          )
-      )
-    ) THEN RAISE EXCEPTION 'P0 vendor needs valid coordinates, WhatsApp and any required current FSSAI certificate'; END IF;
-  ELSIF public.current_app_role() NOT IN ('operations','admin') THEN
-    RAISE EXCEPTION 'Not authorized';
-  END IF;
-
-  verified := decision='verified';
-  UPDATE public.vendors
-  SET verification_status=decision::public.verification_status,
-      operational_status=(CASE WHEN verified THEN 'active' ELSE 'inactive' END)::public.operational_status,
-      marketplace_visible=verified,
-      connect_enabled=(vendor_kind_value='p0_connect' AND verified),
-      store_open_today=CASE WHEN verified THEN store_open_today ELSE false END,
-      updated_at=now()
-  WHERE id=target_vendor;
-
-  IF owner IS NOT NULL THEN
-    INSERT INTO public.notifications(recipient_id,kind,title,body,entity_type,entity_id)
-    VALUES(owner,'vendor_verification',
-      CASE WHEN verified THEN 'Vendor verified' ELSE 'Verification update' END,
-      CASE WHEN verified THEN 'Your store is approved. Open for the day and publish products.'
-        ELSE coalesce(review_note,'Review the Operations decision and update the requested information.') END,
-      'vendor',target_vendor::text);
-  END IF;
-  INSERT INTO public.audit_logs(actor_id,actor_role,action,entity_type,entity_id,after_data)
-  VALUES(actor,public.current_app_role(),'vendor_verification','vendor',target_vendor::text,
-    jsonb_build_object('decision',decision,'note',review_note,'vendor_kind',vendor_kind_value));
-END
-$function$;
-
--- The added discriminator makes older clients fail closed until this migration is applied.
--- Do not use CASCADE: an unexpected database dependency must abort and roll back this transaction.
-DROP FUNCTION IF EXISTS public.connect_vendors_nearby(double precision,double precision);
-CREATE FUNCTION public.connect_vendors_nearby(customer_lat double precision, customer_lng double precision)
-RETURNS TABLE(
-  vendor_kind text,vendor_id uuid,vendor_name text,category text,description text,locality text,address text,
-  latitude double precision,longitude double precision,whatsapp_number text,operating_hours jsonb,
-  logo_url text,distance_km double precision,service_radius_km numeric,store_open_today boolean
-)
-LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-  SELECT v.vendor_kind::text,v.id,v.name,v.category,v.description,v.locality,v.address,v.latitude::double precision,
-    v.longitude::double precision,v.whatsapp_number,v.operating_hours,v.logo_url,d.distance_km,
-    v.service_radius_km,v.store_open_today
-  FROM public.vendors v
-  CROSS JOIN LATERAL (
-    SELECT 6371.0*2*asin(sqrt(least(1.0,greatest(0.0,
-      power(sin(radians(v.latitude::double precision-customer_lat)/2),2)
-      +cos(radians(customer_lat))*cos(radians(v.latitude::double precision))
-      *power(sin(radians(v.longitude::double precision-customer_lng)/2),2)
-    )))) AS distance_km
-  ) d
-  WHERE customer_lat BETWEEN -90 AND 90 AND customer_lng BETWEEN -180 AND 180
-    AND v.vendor_kind='p0_connect' AND v.connect_enabled
-    AND v.verification_status='verified' AND v.operational_status='active'
-    AND v.marketplace_visible AND v.p0_cancelled_at IS NULL
-    AND v.latitude BETWEEN -90 AND 90 AND v.longitude BETWEEN -180 AND 180
-    AND v.whatsapp_number ~ '^\+[1-9][0-9]{7,14}$'
-    AND d.distance_km<=v.service_radius_km
-  ORDER BY d.distance_km
-$function$;
-
-CREATE OR REPLACE FUNCTION public.track_vendor_whatsapp_click(target_vendor_id uuid, click_source text)
-RETURNS uuid
-LANGUAGE plpgsql SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-DECLARE
-  new_event_id uuid;
-  current_customer_id uuid := auth.uid();
-BEGIN
-  IF click_source IS NULL OR click_source NOT IN ('map','vendor_profile','search') THEN
-    RAISE EXCEPTION 'Invalid WhatsApp click source';
-  END IF;
-  IF current_customer_id IS NULL
-     OR public.current_app_role() IS DISTINCT FROM 'customer'::public.app_role THEN
-    RAISE EXCEPTION 'Only authenticated customers may record WhatsApp contact clicks';
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM public.vendors v
-    WHERE v.id=target_vendor_id AND v.vendor_kind='p0_connect' AND v.connect_enabled
-      AND v.verification_status='verified' AND v.operational_status='active'
-      AND v.marketplace_visible AND v.p0_cancelled_at IS NULL
-      AND v.latitude BETWEEN -90 AND 90 AND v.longitude BETWEEN -180 AND 180
-      AND v.whatsapp_number ~ '^\+[1-9][0-9]{7,14}$'
-  ) THEN RAISE EXCEPTION 'Vendor is not available for Connect contact'; END IF;
-
-  INSERT INTO public.vendor_whatsapp_click_events(vendor_id,customer_id,source)
-  VALUES(target_vendor_id,current_customer_id,click_source)
-  RETURNING id INTO new_event_id;
-  RETURN new_event_id;
-END
-$function$;
-
-CREATE OR REPLACE FUNCTION public.marketplace_menu_nearby(customer_lat double precision, customer_lng double precision)
-RETURNS TABLE(
-  item_id uuid,vendor_id uuid,vendor_name text,item_name text,category text,unit text,
-  quantity_step numeric,stock_quantity numeric,image_url text,customer_price numeric,
-  calories_per_unit numeric,protein_g numeric,carbs_g numeric,fat_g numeric,fibre_g numeric,
-  dietary_tags text[],pack_amount numeric,pack_measure text,delivery_enabled boolean,
-  pickup_enabled boolean,distance_km numeric,vendor_lat double precision,vendor_lng double precision,
-  vendor_plan_code text
-)
-LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path=pg_catalog, public
-AS $function$
-  WITH eligible AS (
-    SELECT item.id AS item_id,vendor.id AS vendor_id,vendor.name AS vendor_name,
-      item.name AS item_name,item.category,item.unit,item.quantity_step,item.stock_quantity,item.image_url,
-      round(item.vendor_base_price*(1+coalesce(markup.markup_percent,0)/100),2) AS customer_price,
-      item.calories_per_unit,item.protein_g,item.carbs_g,item.fat_g,item.fibre_g,item.dietary_tags,
-      item.pack_amount,item.pack_measure,vendor.delivery_enabled,vendor.pickup_enabled,
-      vendor.service_radius_km,vendor.latitude::double precision AS vendor_lat,
-      vendor.longitude::double precision AS vendor_lng,coalesce(plan.code,'crave') AS vendor_plan_code,
-      6371*2*asin(sqrt(
-        power(sin(radians((vendor.latitude::double precision-customer_lat)/2)),2)
-        +cos(radians(customer_lat))*cos(radians(vendor.latitude::double precision))
-        *power(sin(radians((vendor.longitude::double precision-customer_lng)/2)),2)
-      )) AS calculated_distance_km
-    FROM public.vendor_menu_items item
-    JOIN public.vendors vendor ON vendor.id=item.vendor_id
-    LEFT JOIN public.vendor_item_markups markup ON markup.menu_item_id=item.id
-    LEFT JOIN public.vendor_plans plan ON plan.id=vendor.plan_id
-    WHERE customer_lat BETWEEN -90 AND 90 AND customer_lng BETWEEN -180 AND 180
-      AND vendor.vendor_kind='subscription'
-      AND coalesce(plan.code,'crave')<>'taster'
-      AND vendor.latitude IS NOT NULL AND vendor.longitude IS NOT NULL
-      AND vendor.latitude BETWEEN -90 AND 90 AND vendor.longitude BETWEEN -180 AND 180
-      AND item.active AND item.stock_quantity>0
-      AND vendor.verification_status='verified' AND vendor.operational_status='active'
-      AND vendor.marketplace_visible AND vendor.store_open_today
-      AND (vendor.delivery_enabled OR vendor.pickup_enabled)
-  )
-  SELECT item_id,vendor_id,vendor_name,item_name,category,unit,quantity_step,stock_quantity,image_url,
-    customer_price,calories_per_unit,protein_g,carbs_g,fat_g,fibre_g,dietary_tags,pack_amount,
-    pack_measure,delivery_enabled,pickup_enabled,round(calculated_distance_km::numeric,2),
-    vendor_lat,vendor_lng,vendor_plan_code
-  FROM eligible
-  WHERE calculated_distance_km<=service_radius_km
-  ORDER BY calculated_distance_km,item_name
-$function$;
-
-DROP POLICY IF EXISTS vendors_customer_read ON public.vendors;
-CREATE POLICY vendors_customer_read ON public.vendors FOR SELECT
-USING (
-  (vendor_kind='subscription' AND (
-    (verification_status='verified' AND operational_status='active' AND marketplace_visible)
-    OR owner_id=auth.uid() OR public.current_app_role() IN ('operations','admin')
-  ))
-  OR (
-    vendor_kind='p0_connect'
-    AND (
-      public.current_app_role()='admin'
-      OR (
-        public.current_app_role()='operations'
-        AND (
-          public.p0_current_actor_can('create') OR public.p0_current_actor_can('review')
-          OR public.p0_current_actor_can('cancel') OR public.p0_current_actor_can('reactivate')
-          OR public.p0_current_actor_can('upgrade') OR public.p0_current_actor_can('upload')
-        )
-      )
-    )
-  )
-);
-
-DROP POLICY IF EXISTS vendors_owner_insert ON public.vendors;
-CREATE POLICY vendors_owner_insert ON public.vendors FOR INSERT
-WITH CHECK (
-  vendor_kind='subscription' AND owner_id=auth.uid()
-  AND public.current_app_role()='vendor'
-);
-
-DROP POLICY IF EXISTS vendors_operations_insert ON public.vendors;
-CREATE POLICY vendors_operations_insert ON public.vendors FOR INSERT
-WITH CHECK (
-  vendor_kind='subscription' AND owner_id IS NOT NULL
-  AND public.current_app_role() IN ('operations','admin')
-);
-
-DROP POLICY IF EXISTS vendors_owner_draft_update ON public.vendors;
-CREATE POLICY vendors_owner_draft_update ON public.vendors FOR UPDATE
-USING (
-  vendor_kind='subscription'
-  AND (owner_id=auth.uid() OR public.current_app_role() IN ('operations','admin'))
-)
-WITH CHECK (
-  vendor_kind='subscription'
-  AND (owner_id=auth.uid() OR public.current_app_role() IN ('operations','admin'))
-);
-
-DROP POLICY IF EXISTS documents_vendor_ops_read ON public.vendor_documents;
-CREATE POLICY documents_vendor_ops_read ON public.vendor_documents FOR SELECT
-USING (
-  public.owns_vendor(vendor_id)
-  OR (
-    public.current_app_role() IN ('operations','admin')
-    AND (
-      EXISTS (SELECT 1 FROM public.vendors v WHERE v.id=vendor_id AND v.vendor_kind='subscription')
-      OR public.current_app_role()='admin'
-      OR (
-        public.current_app_role()='operations'
-        AND (public.p0_current_actor_can('review') OR public.p0_current_actor_can('upload'))
-      )
-    )
-  )
-);
-
-DROP POLICY IF EXISTS documents_ops_update ON public.vendor_documents;
-CREATE POLICY documents_ops_update ON public.vendor_documents FOR UPDATE
-USING (
-  EXISTS (
-    SELECT 1 FROM public.vendors v
-    WHERE v.id=vendor_id
-      AND (
-        (v.vendor_kind='subscription' AND public.current_app_role() IN ('operations','admin'))
-        OR (v.vendor_kind='p0_connect' AND (
-          public.current_app_role()='admin'
-          OR (public.current_app_role()='operations' AND public.p0_current_actor_can('review'))
-        ))
-      )
-  )
-)
-WITH CHECK (
-  EXISTS (
-    SELECT 1 FROM public.vendors v
-    WHERE v.id=vendor_id
-      AND (
-        (v.vendor_kind='subscription' AND public.current_app_role() IN ('operations','admin'))
-        OR (v.vendor_kind='p0_connect' AND (
-          public.current_app_role()='admin'
-          OR (public.current_app_role()='operations' AND public.p0_current_actor_can('review'))
-        ))
-      )
-  )
-);
-
-DROP POLICY IF EXISTS vendor_certificate_read ON storage.objects;
-CREATE POLICY vendor_certificate_read ON storage.objects FOR SELECT TO authenticated
-USING (
-  bucket_id='vendor-certificates'
-  AND (
-    (storage.foldername(name))[1]=auth.uid()::text
-    OR public.current_app_role()='admin'
-    OR (
-      public.current_app_role()='operations'
-      AND (
-        NOT EXISTS (
-          SELECT 1 FROM public.vendors v
-          WHERE v.id::text=(storage.foldername(name))[1] AND v.vendor_kind='p0_connect'
-        )
-        OR public.p0_current_actor_can('review')
-        OR public.p0_current_actor_can('upload')
-      )
-    )
-  )
-);
-
-DROP POLICY IF EXISTS vendor_certificate_operations_upload ON storage.objects;
-CREATE POLICY vendor_certificate_operations_upload ON storage.objects FOR INSERT TO authenticated
-WITH CHECK (
-  bucket_id='vendor-certificates'
-  AND (
-    public.current_app_role()='admin'
-    OR (
-      public.current_app_role()='operations'
-      AND (
-        NOT EXISTS (
-          SELECT 1 FROM public.vendors v
-          WHERE v.id::text=(storage.foldername(name))[1] AND v.vendor_kind='p0_connect'
-        )
-        OR public.p0_current_actor_can('upload')
-      )
-    )
-  )
-);
-
-REVOKE ALL ON FUNCTION public.p0_actor_can(uuid,text) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.p0_actor_can(uuid,text) TO service_role;
-REVOKE ALL ON FUNCTION public.p0_current_actor_can(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.p0_current_actor_can(text) TO anon,authenticated;
-REVOKE ALL ON FUNCTION public.p0_set_operations_permissions(uuid,uuid,jsonb) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.p0_create_vendor(uuid,text,text,text,text,text,double precision,double precision,numeric,text,text,text,boolean,text,jsonb) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.p0_cancel_vendor(uuid,uuid) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.p0_reactivate_vendor(uuid,uuid) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.p0_start_upgrade_invitation(uuid,uuid,text,text) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.p0_mark_upgrade_invitation(uuid,uuid,text,uuid) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.p0_complete_upgrade(uuid,uuid) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.p0_set_operations_permissions(uuid,uuid,jsonb) TO service_role;
-GRANT EXECUTE ON FUNCTION public.p0_create_vendor(uuid,text,text,text,text,text,double precision,double precision,numeric,text,text,text,boolean,text,jsonb) TO service_role;
-GRANT EXECUTE ON FUNCTION public.p0_cancel_vendor(uuid,uuid) TO service_role;
-GRANT EXECUTE ON FUNCTION public.p0_reactivate_vendor(uuid,uuid) TO service_role;
-GRANT EXECUTE ON FUNCTION public.p0_start_upgrade_invitation(uuid,uuid,text,text) TO service_role;
-GRANT EXECUTE ON FUNCTION public.p0_mark_upgrade_invitation(uuid,uuid,text,uuid) TO service_role;
-GRANT EXECUTE ON FUNCTION public.p0_complete_upgrade(uuid,uuid) TO service_role;
-
-REVOKE ALL ON FUNCTION public.connect_vendors_nearby(double precision,double precision) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.connect_vendors_nearby(double precision,double precision) TO anon,authenticated;
-REVOKE ALL ON FUNCTION public.track_vendor_whatsapp_click(uuid,text) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.track_vendor_whatsapp_click(uuid,text) TO authenticated;
-REVOKE ALL ON FUNCTION public.marketplace_menu_nearby(double precision,double precision) FROM PUBLIC,anon;
-GRANT EXECUTE ON FUNCTION public.marketplace_menu_nearby(double precision,double precision) TO authenticated;
-
-ALTER TABLE public.vendor_whatsapp_click_events ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.vendor_whatsapp_click_events FROM PUBLIC,anon,authenticated;
-
-NOTIFY pgrst,'reload schema';
-
-COMMIT;
-
-
--- ===================================================================== Part 3
--- V9_12: vendor plans from the Vendor Partnership Agreement (Annexure A) and once-a-day Food Drops.
---
--- Plans (monthly, exclusive of GST):
---   Taster  Rs 499  business listing, catalogue, leads through WhatsApp
---   Crave   Rs 699  pre-orders, subscriptions, delivery fleet, Food Stories
---   Thrive  Rs 799  Crave + Food Drops
---   Crown   Rs 999  Thrive + Request for Quote (RFQ) with AI assistance
--- The old plans keep their ids, so every vendor stays on an equivalent plan:
---   launch -> crave, growth -> thrive, premium -> crown.
---
--- Food Drops: a drop is claimable only on the evening it is created, from 8 PM to midnight IST.
--- Vendors need the food_drops entitlement (Thrive, Crown) to publish one.
--- Safe to run more than once.
+-- ShePlates: all pending database changes in one file. Safe to run more than once.
+-- Runs, in order: V9_4 people privacy, V9_5 shop link, V9_6 followed Food Shorts, V9_7 private accounts,
+-- V9_8 follow notifications and vendor followers, V9_10 order delivery address.
+-- Third-party delivery is in ordered standalone migrations 20261029000300 and 20261029000400;
+-- apply those separately so the delivered enum value commits before the delivery RPC is created.
+-- If one statement fails, everything is rolled back and nothing is half applied.
 
 begin;
 
-update public.vendor_plans set code = 'crave',  name = 'Crave'  where code = 'launch';
-update public.vendor_plans set code = 'thrive', name = 'Thrive' where code = 'growth';
-update public.vendor_plans set code = 'crown',  name = 'Crown'  where code = 'premium';
+-- =================================================================== V9_4_PEOPLE_PRIVACY
+-- V9_4 People privacy hardening. Run after V9_3_PEOPLE_STATUS.sql. Safe to re-run.
+-- social_profiles is readable by every signed-in user (handles are public), which also exposed the coarse map
+-- position of everyone who is on the map, with no distance limit. From now on:
+--   * map_lat, map_lng and discoverable cannot be read directly; people_nearby() / status_feed() (with the
+--     radius cap) are the only way to see where someone is, and my_discoverable() tells you your own setting.
+--   * they cannot be written directly either: set_discoverable() is the only way, and it snaps the position
+--     to the ~550 m grid.
+create or replace function public.my_discoverable() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select discoverable from public.social_profiles where user_id = auth.uid()), false)
+$$;
+revoke all on function public.my_discoverable() from public, anon;
+grant execute on function public.my_discoverable() to authenticated;
 
-insert into public.vendor_plans(code, name, monthly_price, annual_price, entitlements)
-values ('taster', 'Taster', 499, null, '{}'::jsonb)
-on conflict (code) do nothing;
+revoke select, insert, update on public.social_profiles from anon, authenticated;
+grant select (user_id, handle, bio, created_at, updated_at) on public.social_profiles to anon, authenticated;
+grant insert (user_id, handle, bio) on public.social_profiles to authenticated;
+grant update (handle, bio, updated_at) on public.social_profiles to authenticated;
 
-update public.vendor_plans set monthly_price = 499, entitlements =
-  '{"catalogue":true,"inventory":true,"scheduled_orders":false,"ordering":false,"whatsapp_leads":true,"food_stories":false,"food_drops":false,"rfq_access":false,"ai_quotes":false}'::jsonb
-  where code = 'taster';
-update public.vendor_plans set monthly_price = 699, entitlements =
-  '{"catalogue":true,"inventory":true,"scheduled_orders":true,"ordering":true,"whatsapp_leads":false,"food_stories":true,"food_drops":false,"rfq_access":false,"ai_quotes":false}'::jsonb
-  where code = 'crave';
-update public.vendor_plans set monthly_price = 799, entitlements =
-  '{"catalogue":true,"inventory":true,"scheduled_orders":true,"ordering":true,"whatsapp_leads":false,"food_stories":true,"food_drops":true,"rfq_access":false,"ai_quotes":false}'::jsonb
-  where code = 'thrive';
-update public.vendor_plans set monthly_price = 999, entitlements =
-  '{"catalogue":true,"inventory":true,"scheduled_orders":true,"ordering":true,"whatsapp_leads":false,"food_stories":true,"food_drops":true,"rfq_access":true,"ai_quotes":true,"priority_alerts":true}'::jsonb
-  where code = 'crown';
 
--- Only vendors whose plan includes Food Drops can publish one; they can always end their own.
-drop policy if exists food_drops_vendor_write on public.food_drops;
-create policy food_drops_vendor_write on public.food_drops for all
-  using (
-    public.current_app_role() in ('operations', 'admin')
-    or exists (select 1 from public.vendors v where v.id = vendor_id and v.owner_id = auth.uid())
+-- =================================================================== V9_5_FOOD_SHORT_SHOP_LINK
+-- Add an optional customer-facing shop link to Food Shorts.
+alter table public.food_shorts
+  add column if not exists shop_link text
+  check (shop_link is null or (char_length(shop_link) <= 2048 and shop_link ~* '^https?://'));
+
+-- The customer feed returns the link only for shorts already visible to that customer.
+drop function if exists public.nearby_food_shorts(double precision, double precision, numeric, integer);
+create function public.nearby_food_shorts(
+  p_lat double precision, p_lng double precision, p_radius_km numeric default 30, p_limit int default 60
+) returns table (
+  id uuid, vendor_id uuid, vendor_name text, vendor_category text, product_id uuid, shop_link text,
+  title text, caption text, video_url text, thumb_url text, duration_s numeric, reach_km numeric,
+  view_count int, like_count bigint, liked boolean, created_at timestamptz, distance_km double precision
+)
+language sql stable security definer set search_path = public as $$
+  with d as (
+    select s.*, v.name as vendor_name, v.category as vendor_category,
+      6371 * 2 * asin(least(1, sqrt(
+        power(sin(radians(v.latitude::double precision - p_lat) / 2), 2)
+        + cos(radians(p_lat)) * cos(radians(v.latitude::double precision))
+        * power(sin(radians(v.longitude::double precision - p_lng) / 2), 2)
+      ))) as dist
+    from public.food_shorts s
+    join public.vendors v on v.id = s.vendor_id
+    where s.status = 'active'
+      and v.verification_status = 'verified'
+      and v.operational_status = 'active'
+      and v.marketplace_visible
+      and v.latitude is not null and v.longitude is not null
   )
-  with check (
-    public.current_app_role() in ('operations', 'admin')
-    or (
-      exists (select 1 from public.vendors v where v.id = vendor_id and v.owner_id = auth.uid())
-      and public.vendor_has_entitlement(vendor_id, 'food_drops')
+  select d.id, d.vendor_id, d.vendor_name, d.vendor_category, d.product_id, d.shop_link,
+    d.title, d.caption, d.video_url, d.thumb_url, d.duration_s, d.reach_km, d.view_count,
+    (select count(*) from public.food_short_likes l where l.short_id = d.id),
+    exists (select 1 from public.food_short_likes l where l.short_id = d.id and l.user_id = auth.uid()),
+    d.created_at, d.dist
+  from d
+  where auth.uid() is not null and d.dist <= least(d.reach_km::double precision, p_radius_km::double precision)
+  order by d.created_at desc
+  limit least(greatest(coalesce(p_limit, 60), 1), 100);
+$$;
+revoke all on function public.nearby_food_shorts(double precision, double precision, numeric, integer) from public;
+grant execute on function public.nearby_food_shorts(double precision, double precision, numeric, integer) to authenticated;
+
+drop function if exists public.create_food_short(text, text, text, text, numeric, numeric, uuid);
+create function public.create_food_short(
+  p_title text, p_caption text, p_video_url text, p_thumb_url text,
+  p_duration_s numeric, p_reach_km numeric, p_product_id uuid default null, p_shop_link text default null
+) returns public.food_shorts
+language plpgsql security definer set search_path = public as $$
+declare
+  v public.vendors;
+  created public.food_shorts;
+  reach numeric;
+  shop_link_value text;
+begin
+  select * into v from public.vendors where owner_id = auth.uid() order by created_at limit 1;
+  if v.id is null then raise exception 'Only a vendor can post a Food Short'; end if;
+  if p_duration_s is null or p_duration_s <= 0 or p_duration_s > 30 then raise exception 'A Food Short can be at most 30 seconds'; end if;
+  if coalesce(trim(p_title), '') = '' then raise exception 'Give the short a title'; end if;
+  if p_video_url is null or p_video_url !~ '^https?://' then raise exception 'The video upload is missing'; end if;
+  if (select count(*) from public.food_shorts where vendor_id = v.id and created_at > now() - interval '1 day') >= 10 then
+    raise exception 'Daily limit reached: 10 Food Shorts per day';
+  end if;
+  if p_product_id is not null and not exists (select 1 from public.vendor_menu_items where id = p_product_id and vendor_id = v.id) then
+    raise exception 'That product does not belong to your store';
+  end if;
+  shop_link_value := nullif(trim(p_shop_link), '');
+  if shop_link_value is not null and (char_length(shop_link_value) > 2048 or shop_link_value !~* '^https?://') then
+    raise exception 'Shop links must be valid http:// or https:// URLs';
+  end if;
+  reach := least(30, greatest(1, coalesce(p_reach_km, v.service_radius_km, 5)));
+  insert into public.food_shorts(vendor_id, product_id, shop_link, title, caption, video_url, thumb_url, duration_s, reach_km)
+  values (v.id, p_product_id, shop_link_value, left(trim(p_title), 80), left(coalesce(p_caption, ''), 300), p_video_url, p_thumb_url, p_duration_s, reach)
+  returning * into created;
+  return created;
+end;
+$$;
+revoke all on function public.create_food_short(text, text, text, text, numeric, numeric, uuid, text) from public;
+grant execute on function public.create_food_short(text, text, text, text, numeric, numeric, uuid, text) to authenticated;
+
+
+-- =================================================================== V9_6_FOLLOWED_FOOD_SHORTS
+-- Customers can see active shorts from followed vendors even without a saved
+-- delivery pin or when they are outside the vendor's nearby reach.
+alter table public.food_shorts
+  add column if not exists shop_link text
+  check (shop_link is null or (char_length(shop_link) <= 2048 and shop_link ~* '^https?://'));
+
+drop function if exists public.nearby_food_shorts(double precision, double precision, numeric, integer);
+create function public.nearby_food_shorts(
+  p_lat double precision, p_lng double precision, p_radius_km numeric default 30, p_limit int default 60
+) returns table (
+  id uuid, vendor_id uuid, vendor_name text, vendor_category text, product_id uuid, shop_link text,
+  title text, caption text, video_url text, thumb_url text, duration_s numeric, reach_km numeric,
+  view_count int, like_count bigint, liked boolean, created_at timestamptz, distance_km double precision
+)
+language sql stable security definer set search_path = public as $$
+  with d as (
+    select s.*, v.name as vendor_name, v.category as vendor_category,
+      case
+        when p_lat is not null and p_lng is not null and v.latitude is not null and v.longitude is not null
+        then 6371 * 2 * asin(least(1, sqrt(
+          power(sin(radians(v.latitude::double precision - p_lat) / 2), 2)
+          + cos(radians(p_lat)) * cos(radians(v.latitude::double precision))
+          * power(sin(radians(v.longitude::double precision - p_lng) / 2), 2)
+        )))
+        else null
+      end as dist
+    from public.food_shorts s
+    join public.vendors v on v.id = s.vendor_id
+    where s.status = 'active'
+      and v.verification_status = 'verified'
+      and v.operational_status = 'active'
+      and v.marketplace_visible
+  )
+  select d.id, d.vendor_id, d.vendor_name, d.vendor_category, d.product_id, d.shop_link,
+    d.title, d.caption, d.video_url, d.thumb_url, d.duration_s, d.reach_km, d.view_count,
+    (select count(*) from public.food_short_likes l where l.short_id = d.id),
+    exists (select 1 from public.food_short_likes l where l.short_id = d.id and l.user_id = auth.uid()),
+    d.created_at, d.dist
+  from d
+  where auth.uid() is not null and (
+    (d.dist is not null and d.dist <= least(d.reach_km::double precision, p_radius_km::double precision))
+    or exists (
+      select 1 from public.vendor_follows f
+      where f.follower_id = auth.uid() and f.vendor_id = d.vendor_id
     )
-  );
+  )
+  order by d.created_at desc
+  limit least(greatest(coalesce(p_limit, 60), 1), 100);
+$$;
+revoke all on function public.nearby_food_shorts(double precision, double precision, numeric, integer) from public;
+grant execute on function public.nearby_food_shorts(double precision, double precision, numeric, integer) to authenticated;
 
--- A new drop opens at 8 PM IST (or now, if it is created after 8 PM) and closes at midnight IST the same day.
-create or replace function public.set_food_drop_daily_window()
-returns trigger
-language plpgsql
-set search_path = public
-as $$
+-- Vendors can see aggregate engagement for their own shorts without accessing
+-- customer IDs or raw like rows.
+create or replace function public.vendor_food_shorts()
+returns table (
+  id uuid, vendor_id uuid, vendor_name text, vendor_category text, product_id uuid, shop_link text,
+  title text, caption text, video_url text, thumb_url text, duration_s numeric, reach_km numeric,
+  status text, view_count integer, like_count bigint, created_at timestamptz
+)
+language sql stable security definer set search_path = public as $$
+  select s.id, s.vendor_id, v.name, v.category, s.product_id, s.shop_link,
+    s.title, s.caption, s.video_url, s.thumb_url, s.duration_s, s.reach_km,
+    s.status, s.view_count,
+    (select count(*) from public.food_short_likes l where l.short_id = s.id),
+    s.created_at
+  from public.food_shorts s
+  join public.vendors v on v.id = s.vendor_id
+  where auth.uid() is not null and public.current_app_role() = 'vendor'
+    and v.owner_id = auth.uid() and s.status <> 'removed'
+  order by s.created_at desc;
+$$;
+revoke all on function public.vendor_food_shorts() from public, anon;
+grant execute on function public.vendor_food_shorts() to authenticated;
+
+-- Record a customer view and return the updated counter to the viewer.
+drop function if exists public.record_short_view(uuid);
+create function public.record_short_view(p_short_id uuid)
+returns integer
+language plpgsql security definer set search_path = public as $$
 declare
-  v_local_now timestamp without time zone := now() at time zone 'Asia/Kolkata';
-  v_local_open timestamp without time zone := date_trunc('day', now() at time zone 'Asia/Kolkata') + interval '20 hours';
-  v_local_close timestamp without time zone := date_trunc('day', now() at time zone 'Asia/Kolkata') + interval '1 day';
+  updated_view_count integer;
 begin
-  if v_local_now >= v_local_open then
-    new.starts_at := now();
+  if auth.uid() is null or public.current_app_role() <> 'customer' then
+    raise exception 'Only signed-in customers can record Food Short views';
+  end if;
+
+  update public.food_shorts
+  set view_count = view_count + 1
+  where id = p_short_id and status = 'active'
+  returning view_count into updated_view_count;
+
+  return coalesce(updated_view_count, 0);
+end;
+$$;
+revoke all on function public.record_short_view(uuid) from public, anon;
+grant execute on function public.record_short_view(uuid) to authenticated;
+
+
+-- =================================================================== V9_7_PRIVATE_CUSTOMER_ACCOUNTS
+-- Private customer accounts require approval before a customer follow is created.
+alter table public.social_profiles
+  add column if not exists private_account boolean not null default false;
+
+create table if not exists public.customer_follow_requests (
+  requester_id uuid not null references public.profiles(id) on delete cascade,
+  recipient_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (requester_id, recipient_id),
+  check (requester_id <> recipient_id)
+);
+create index if not exists customer_follow_requests_recipient_idx
+  on public.customer_follow_requests(recipient_id, created_at desc);
+alter table public.customer_follow_requests enable row level security;
+drop policy if exists customer_follow_requests_read on public.customer_follow_requests;
+create policy customer_follow_requests_read on public.customer_follow_requests for select
+  using (requester_id = auth.uid() or recipient_id = auth.uid());
+
+create or replace function public.my_private_account() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((select sp.private_account from public.social_profiles sp where sp.user_id = auth.uid()), false)
+$$;
+
+create or replace function public.set_private_account(p_private boolean) returns boolean
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or public.current_app_role() <> 'customer' then
+    raise exception 'Sign in as a customer to change account privacy';
+  end if;
+  perform public.ensure_social_profile(null);
+  update public.social_profiles set private_account = p_private, updated_at = now() where user_id = auth.uid();
+  return p_private;
+end;
+$$;
+
+drop function if exists public.follow_person(uuid);
+create function public.follow_person(p_user uuid) returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  target_is_private boolean;
+begin
+  if auth.uid() is null or public.current_app_role() <> 'customer' then raise exception 'Sign in as a customer to follow people'; end if;
+  if p_user = auth.uid() then raise exception 'You cannot follow yourself'; end if;
+  if not exists (select 1 from public.profiles where id = p_user and role = 'customer') then raise exception 'That person was not found'; end if;
+  if exists (select 1 from public.customer_follows where follower_id = auth.uid() and followee_id = p_user) then return 'following'; end if;
+  select sp.private_account into target_is_private from public.social_profiles sp where sp.user_id = p_user;
+  if coalesce(target_is_private, false) then
+    insert into public.customer_follow_requests(requester_id, recipient_id)
+      values (auth.uid(), p_user) on conflict do nothing;
+    return 'requested';
+  end if;
+  if (select count(*) from public.customer_follows where follower_id = auth.uid()) >= 1000 then raise exception 'You can follow up to 1,000 people'; end if;
+  insert into public.customer_follows(follower_id, followee_id) values (auth.uid(), p_user) on conflict do nothing;
+  return 'following';
+end;
+$$;
+
+create or replace function public.unfollow_person(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.customer_follows where follower_id = auth.uid() and followee_id = p_user;
+  delete from public.customer_follow_requests where requester_id = auth.uid() and recipient_id = p_user;
+end;
+$$;
+
+create or replace function public.respond_follow_request(p_user uuid, p_accept boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or public.current_app_role() <> 'customer' then raise exception 'Sign in as a customer to manage follow requests'; end if;
+  if not exists (select 1 from public.customer_follow_requests where requester_id = p_user and recipient_id = auth.uid()) then
+    raise exception 'This follow request is no longer available';
+  end if;
+  if p_accept then
+    if (select count(*) from public.customer_follows where follower_id = p_user) >= 1000 then raise exception 'This customer has reached the follow limit'; end if;
+    insert into public.customer_follows(follower_id, followee_id) values (p_user, auth.uid()) on conflict do nothing;
+  end if;
+  delete from public.customer_follow_requests where requester_id = p_user and recipient_id = auth.uid();
+end;
+$$;
+
+create or replace function public.list_follow_requests()
+returns table (user_id uuid, handle text, bio text)
+language sql stable security definer set search_path = public as $$
+  select sp.user_id, sp.handle, sp.bio
+  from public.customer_follow_requests r
+  join public.social_profiles sp on sp.user_id = r.requester_id
+  where r.recipient_id = auth.uid()
+  order by r.created_at desc
+  limit 200
+$$;
+
+create or replace function public.list_outgoing_follow_requests()
+returns table (user_id uuid)
+language sql stable security definer set search_path = public as $$
+  select r.recipient_id from public.customer_follow_requests r where r.requester_id = auth.uid()
+$$;
+
+drop function if exists public.search_people(text, integer);
+create function public.search_people(p_query text, p_limit int default 20)
+returns table (user_id uuid, handle text, bio text, following boolean, requested boolean, private_account boolean, follower_count bigint, discoverable boolean)
+language sql stable security definer set search_path = public as $$
+  select sp.user_id, sp.handle, sp.bio,
+    exists (select 1 from public.customer_follows f where f.follower_id = auth.uid() and f.followee_id = sp.user_id),
+    exists (select 1 from public.customer_follow_requests r where r.requester_id = auth.uid() and r.recipient_id = sp.user_id),
+    sp.private_account,
+    (select count(*) from public.customer_follows f where f.followee_id = sp.user_id),
+    sp.discoverable
+  from public.social_profiles sp join public.profiles p on p.id = sp.user_id
+  where auth.uid() is not null and p.role = 'customer' and sp.user_id <> auth.uid()
+    and char_length(ltrim(trim(coalesce(p_query, '')), '@')) >= 2
+    and starts_with(sp.handle, lower(ltrim(trim(p_query), '@')))
+  order by (sp.handle = lower(ltrim(trim(p_query), '@'))) desc, sp.handle
+  limit least(greatest(coalesce(p_limit, 20), 1), 50)
+$$;
+
+drop function if exists public.people_nearby(double precision, double precision, numeric, text, integer);
+create function public.people_nearby(p_lat double precision, p_lng double precision, p_radius_km numeric default 5, p_query text default null, p_limit int default 60)
+returns table (user_id uuid, handle text, bio text, following boolean, requested boolean, private_account boolean, follower_count bigint, dist_km numeric, pin_lat numeric, pin_lng numeric, has_status boolean)
+language sql stable security definer set search_path = public as $$
+  with d as (
+    select sp.user_id as uid, sp.handle as h, sp.bio as b, sp.map_lat, sp.map_lng, sp.private_account,
+      public.distance_km(p_lat, p_lng, sp.map_lat::double precision, sp.map_lng::double precision) as dist
+    from public.social_profiles sp join public.profiles p on p.id = sp.user_id
+    where auth.uid() is not null and p.role = 'customer' and sp.discoverable and sp.map_lat is not null and sp.map_lng is not null and sp.user_id <> auth.uid()
+  )
+  select d.uid, d.h, d.b,
+    exists (select 1 from public.customer_follows f where f.follower_id = auth.uid() and f.followee_id = d.uid),
+    exists (select 1 from public.customer_follow_requests r where r.requester_id = auth.uid() and r.recipient_id = d.uid),
+    d.private_account,
+    (select count(*) from public.customer_follows f where f.followee_id = d.uid),
+    (round(d.dist * 2) / 2)::numeric, d.map_lat, d.map_lng,
+    exists (select 1 from public.customer_statuses s where s.author_id = d.uid and s.expires_at > now()
+            and not exists (select 1 from public.status_views v where v.status_id = s.id and v.viewer_id = auth.uid())
+            and (not d.private_account or exists (select 1 from public.customer_follows f where f.follower_id = auth.uid() and f.followee_id = d.uid)))
+  from d
+  where d.dist <= least(p_radius_km::double precision, 30)
+    and (coalesce(trim(p_query), '') = '' or starts_with(d.h, lower(ltrim(trim(p_query), '@'))))
+  order by d.dist
+  limit least(greatest(coalesce(p_limit, 60), 1), 100)
+$$;
+
+create or replace function public.status_feed(p_lat double precision default null, p_lng double precision default null, p_radius_km numeric default 5)
+returns table (status_id uuid, author_id uuid, handle text, kind text, media_url text, thumb_url text, caption text, vendor_id uuid, vendor_name text,
+  duration_s numeric, created_at timestamptz, expires_at timestamptz, like_count bigint, liked boolean, source text, dist_km numeric)
+language sql stable security definer set search_path = public as $$
+  select s.id, s.author_id, sp.handle, s.kind, s.media_url, s.thumb_url, s.caption, s.vendor_id, v.name, s.duration_s, s.created_at, s.expires_at,
+    (select count(*) from public.status_likes l where l.status_id = s.id),
+    exists (select 1 from public.status_likes l where l.status_id = s.id and l.user_id = auth.uid()),
+    case when f.followee_id is not null then 'following' else 'nearby' end,
+    case when sp.discoverable and sp.map_lat is not null and p_lat is not null and p_lng is not null
+         then (round(public.distance_km(p_lat, p_lng, sp.map_lat::double precision, sp.map_lng::double precision) * 2) / 2)::numeric end
+  from public.customer_statuses s
+  join public.social_profiles sp on sp.user_id = s.author_id
+  left join public.vendors v on v.id = s.vendor_id
+  left join public.customer_follows f on f.follower_id = auth.uid() and f.followee_id = s.author_id
+  where auth.uid() is not null and s.author_id <> auth.uid() and s.expires_at > now()
+    and not exists (select 1 from public.status_views sv where sv.status_id = s.id and sv.viewer_id = auth.uid())
+    and (f.followee_id is not null
+         or (not sp.private_account and sp.discoverable and sp.map_lat is not null and p_lat is not null and p_lng is not null
+             and public.distance_km(p_lat, p_lng, sp.map_lat::double precision, sp.map_lng::double precision) <= least(p_radius_km::double precision, 30)))
+  order by s.created_at desc
+  limit 200
+$$;
+
+revoke all on function public.my_private_account() from public, anon;
+revoke all on function public.set_private_account(boolean) from public, anon;
+revoke all on function public.follow_person(uuid) from public, anon;
+revoke all on function public.unfollow_person(uuid) from public, anon;
+revoke all on function public.respond_follow_request(uuid, boolean) from public, anon;
+revoke all on function public.list_follow_requests() from public, anon;
+revoke all on function public.list_outgoing_follow_requests() from public, anon;
+revoke all on function public.search_people(text, integer) from public, anon;
+revoke all on function public.people_nearby(double precision, double precision, numeric, text, integer) from public, anon;
+grant execute on function public.my_private_account() to authenticated;
+grant execute on function public.set_private_account(boolean) to authenticated;
+grant execute on function public.follow_person(uuid) to authenticated;
+grant execute on function public.unfollow_person(uuid) to authenticated;
+grant execute on function public.respond_follow_request(uuid, boolean) to authenticated;
+grant execute on function public.list_follow_requests() to authenticated;
+grant execute on function public.list_outgoing_follow_requests() to authenticated;
+grant execute on function public.search_people(text, integer) to authenticated;
+grant execute on function public.people_nearby(double precision, double precision, numeric, text, integer) to authenticated;
+
+
+-- =================================================================== V9_8_FOLLOW_NOTIFICATIONS
+-- Notify customers about private-account follow requests and vendors about new followers.
+
+create or replace function public.follow_person(p_user uuid) returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  target_is_private boolean;
+  inserted_count integer;
+begin
+  if auth.uid() is null or public.current_app_role() <> 'customer' then
+    raise exception 'Sign in as a customer to follow people';
+  end if;
+  if p_user = auth.uid() then raise exception 'You cannot follow yourself'; end if;
+  if not exists (select 1 from public.profiles where id = p_user and role = 'customer') then
+    raise exception 'That person was not found';
+  end if;
+  if exists (select 1 from public.customer_follows where follower_id = auth.uid() and followee_id = p_user) then
+    return 'following';
+  end if;
+
+  select sp.private_account into target_is_private
+  from public.social_profiles sp where sp.user_id = p_user;
+  if coalesce(target_is_private, false) then
+    insert into public.customer_follow_requests(requester_id, recipient_id)
+    values (auth.uid(), p_user) on conflict do nothing;
+    get diagnostics inserted_count = row_count;
+    if inserted_count > 0 then
+      insert into public.notifications(recipient_id, kind, title, body, entity_type, entity_id)
+      select p_user, 'follow_request', 'New follow request', '@' || sp.handle || ' wants to follow your private account.',
+        'customer_follow_request', auth.uid()::text
+      from public.social_profiles sp where sp.user_id = auth.uid();
+    end if;
+    return 'requested';
+  end if;
+
+  if (select count(*) from public.customer_follows where follower_id = auth.uid()) >= 1000 then
+    raise exception 'You can follow up to 1,000 people';
+  end if;
+  insert into public.customer_follows(follower_id, followee_id)
+  values (auth.uid(), p_user) on conflict do nothing;
+  return 'following';
+end;
+$$;
+
+create or replace function public.unfollow_person(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from public.customer_follows where follower_id = auth.uid() and followee_id = p_user;
+  delete from public.customer_follow_requests where requester_id = auth.uid() and recipient_id = p_user;
+  update public.notifications set read_at = now()
+  where recipient_id = p_user and kind = 'follow_request'
+    and entity_type = 'customer_follow_request' and entity_id = auth.uid()::text and read_at is null;
+end;
+$$;
+
+create or replace function public.respond_follow_request(p_user uuid, p_accept boolean) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null or public.current_app_role() <> 'customer' then
+    raise exception 'Sign in as a customer to manage follow requests';
+  end if;
+  if not exists (
+    select 1 from public.customer_follow_requests
+    where requester_id = p_user and recipient_id = auth.uid()
+  ) then
+    raise exception 'This follow request is no longer available';
+  end if;
+  if p_accept then
+    if (select count(*) from public.customer_follows where follower_id = p_user) >= 1000 then
+      raise exception 'This customer has reached the follow limit';
+    end if;
+    insert into public.customer_follows(follower_id, followee_id)
+    values (p_user, auth.uid()) on conflict do nothing;
+    insert into public.notifications(recipient_id, kind, title, body, entity_type, entity_id)
+    select p_user, 'follow_request_accepted', 'Follow request accepted',
+      '@' || coalesce(sp.handle, 'A customer') || ' accepted your follow request.',
+      'customer_follow_request_accepted', auth.uid()::text
+    from public.profiles p
+    left join public.social_profiles sp on sp.user_id = p.id
+    where p.id = auth.uid();
+  end if;
+  delete from public.customer_follow_requests where requester_id = p_user and recipient_id = auth.uid();
+  update public.notifications set read_at = now()
+  where recipient_id = auth.uid() and kind = 'follow_request'
+    and entity_type = 'customer_follow_request' and entity_id = p_user::text and read_at is null;
+end;
+$$;
+
+create or replace function public.follow_vendor(p_vendor uuid, p_follow boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare
+  vendor_owner uuid;
+  inserted_count integer;
+begin
+  if auth.uid() is null or public.current_app_role() <> 'customer' then
+    raise exception 'Sign in as a customer to follow vendors';
+  end if;
+  select v.owner_id into vendor_owner from public.vendors v where v.id = p_vendor;
+  if vendor_owner is null then raise exception 'That vendor was not found'; end if;
+
+  if p_follow then
+    insert into public.vendor_follows(follower_id, vendor_id)
+    values (auth.uid(), p_vendor) on conflict do nothing;
+    get diagnostics inserted_count = row_count;
+    if inserted_count > 0 then
+      insert into public.notifications(recipient_id, kind, title, body, entity_type, entity_id)
+      select vendor_owner, 'vendor_follower', 'New customer follower',
+        '@' || sp.handle || ' started following your store.',
+        'vendor_follower', p_vendor::text
+      from public.social_profiles sp where sp.user_id = auth.uid();
+    end if;
   else
-    new.starts_at := v_local_open at time zone 'Asia/Kolkata';
+    delete from public.vendor_follows where follower_id = auth.uid() and vendor_id = p_vendor;
   end if;
-  new.ends_at := v_local_close at time zone 'Asia/Kolkata';
-  return new;
 end;
 $$;
 
-drop trigger if exists food_drops_daily_window on public.food_drops;
-create trigger food_drops_daily_window
-before insert on public.food_drops
-for each row execute function public.set_food_drop_daily_window();
-
-create or replace function public.claim_food_drop(p_drop_id uuid, p_quantity int)
-returns public.food_drop_claims
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_drop public.food_drops;
-  v_claim public.food_drop_claims;
+create or replace function public.list_vendor_followers(p_vendor uuid)
+returns table (user_id uuid, handle text, bio text, followed_at timestamptz)
+language plpgsql stable security definer set search_path = public as $$
 begin
-  if auth.uid() is null then
-    raise exception 'Sign in required' using errcode = '28000';
+  if auth.uid() is null or not exists (
+    select 1 from public.vendors v where v.id = p_vendor and v.owner_id = auth.uid()
+  ) then
+    raise exception 'Only this vendor can view its customer followers';
   end if;
-  if p_quantity is null or p_quantity <= 0 then
-    raise exception 'Quantity must be positive' using errcode = '22023';
-  end if;
-
-  update public.food_drops
-    set remaining_quantity = remaining_quantity - p_quantity, updated_at = now()
-    where id = p_drop_id
-      and status = 'active'
-      and clock_timestamp() >= starts_at
-      and clock_timestamp() < ends_at
-      and remaining_quantity >= p_quantity
-    returning * into v_drop;
-
-  if v_drop.id is null then
-    raise exception 'Food Drops are claimable only tonight, from 8:00 PM to midnight IST, while stock lasts' using errcode = 'P0001';
-  end if;
-
-  insert into public.food_drop_claims (drop_id, customer_id, quantity, unit_price, total_price)
-  values (p_drop_id, auth.uid(), p_quantity, v_drop.drop_price, v_drop.drop_price * p_quantity)
-  returning * into v_claim;
-
-  return v_claim;
+  return query
+  select f.follower_id, coalesce(sp.handle, 'customer'), coalesce(sp.bio, ''), f.created_at
+  from public.vendor_follows f
+  left join public.social_profiles sp on sp.user_id = f.follower_id
+  where f.vendor_id = p_vendor
+  order by f.created_at desc
+  limit 500;
 end;
 $$;
 
-grant execute on function public.claim_food_drop(uuid, int) to authenticated;
+revoke all on function public.follow_person(uuid) from public, anon;
+revoke all on function public.unfollow_person(uuid) from public, anon;
+revoke all on function public.respond_follow_request(uuid, boolean) from public, anon;
+revoke all on function public.follow_vendor(uuid, boolean) from public, anon;
+revoke all on function public.list_vendor_followers(uuid) from public, anon;
+grant execute on function public.follow_person(uuid) to authenticated;
+grant execute on function public.unfollow_person(uuid) to authenticated;
+grant execute on function public.respond_follow_request(uuid, boolean) to authenticated;
+grant execute on function public.follow_vendor(uuid, boolean) to authenticated;
+grant execute on function public.list_vendor_followers(uuid) to authenticated;
+
+
+-- =================================================================== V9_10_ORDER_DELIVERY_ADDRESS
+alter table public.orders
+  add column if not exists delivery_address text;
 
 commit;

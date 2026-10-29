@@ -656,6 +656,15 @@ function LocationSuggestions({ query, onSelect }: { query: string; onSelect: (pl
 export function ShePlatesV3() {
   const [session, setSession] = useState<DemoSession | null>(null);
   const [state, setState] = useState<V3State>(EMPTY_STATE);
+  const syncEmail = session?.email;
+  const syncName = session?.name;
+  const syncRole = session?.role;
+  const syncUserId = session?.userId;
+  const syncVendorId = session?.vendorId;
+  const syncSession = useMemo(() => {
+    if (!syncEmail || !syncName || !syncRole) return null;
+    return { email: syncEmail, name: syncName, role: syncRole, userId: syncUserId, vendorId: syncVendorId };
+  }, [syncEmail, syncName, syncRole, syncUserId, syncVendorId]);
   const [active, setActive] = useState("Marketplace");
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -864,7 +873,7 @@ export function ShePlatesV3() {
     return unsubscribe;
   }, [session, notificationSessionUserId, notificationSessionEmail, notificationSessionRole]);
   useEffect(() => {
-    if (!hydrated || !session) return;
+    if (!hydrated || !syncSession) return;
     if (!isLiveSupabaseMode()) { queueMicrotask(() => setLiveSync("ready")); return; }
     let cancelled = false;
     const syncTimeout = window.setTimeout(() => {
@@ -875,9 +884,9 @@ export function ShePlatesV3() {
     }, 10000);
     queueMicrotask(() => { setLiveSync("loading"); setLiveSyncError(""); });
     (async () => {
-      if (session.role === "customer") {
-        const preference = session.userId ? await loadLiveCustomerPreference(session.userId) : null;
-        const memoryRows = session.userId ? await loadLiveCustomerMemory(session.userId) : [];
+      if (syncSession.role === "customer") {
+        const preference = syncSession.userId ? await loadLiveCustomerPreference(syncSession.userId) : null;
+        const memoryRows = syncSession.userId ? await loadLiveCustomerMemory(syncSession.userId) : [];
         const liveMemory: AgentMemory = {};
         for (const row of memoryRows as Array<{ memory_key: string; memory_value: string }>) {
           if (row.memory_key === "preferred_budget") liveMemory.lastBudget = Number(row.memory_value) || undefined;
@@ -904,18 +913,18 @@ export function ShePlatesV3() {
         }
         if (!cancelled) setState((current) => ({
           ...current,
-          customers: preference ? [...current.customers.filter((item) => item.email !== session.email), {
-            email: session.email, address: String(preference.address), latitude: Number(preference.latitude), longitude: Number(preference.longitude),
+          customers: preference ? [...current.customers.filter((item) => item.email !== syncSession.email), {
+            email: syncSession.email, address: String(preference.address), latitude: Number(preference.latitude), longitude: Number(preference.longitude),
             householdSize: Number(preference.household_size || 1), diet: String(preference.diet || "No preference"),
             allergies: preference.allergies || [], goals: preference.health_goals || [], dislikes: String(preference.dislikes_and_instructions || ""),
             onboardingComplete: Boolean(preference.onboarding_complete), agentMemory: liveMemory,
-          }] : current.customers.filter((item) => item.email !== session.email),
+          }] : current.customers.filter((item) => item.email !== syncSession.email),
           vendors, products, markups: {}, merchandising, merchandisingError,
         }));
-      } else if (session.role === "vendor" && session.vendorId) {
-        const workspace = await loadLiveVendorWorkspace(session.vendorId);
+      } else if (syncSession.role === "vendor" && syncSession.vendorId) {
+        const workspace = await loadLiveVendorWorkspace(syncSession.vendorId);
         if (!cancelled) setState((current) => ({ ...current,
-          vendors: [vendorFromLive(workspace.vendor, { email: session.email, name: session.name }, workspace.document || undefined)],
+          vendors: [vendorFromLive(workspace.vendor, { email: syncSession.email, name: syncSession.name }, workspace.document || undefined)],
           products: workspace.products.map(productFromLive),
         }));
       } else {
@@ -938,12 +947,12 @@ export function ShePlatesV3() {
         }));
       }
       const commerce = await loadLiveCommerceSnapshot();
-      if (!cancelled) setState((current) => mergeLiveCommerce(current, commerce, session));
+      if (!cancelled) setState((current) => mergeLiveCommerce(current, commerce, syncSession));
       window.clearTimeout(syncTimeout);
       if (!cancelled) setLiveSync("ready");
     })().catch((error) => { window.clearTimeout(syncTimeout); if (!cancelled) { setLiveSync("error"); setLiveSyncError(error instanceof Error ? error.message : "Your latest account data could not be loaded"); } });
     return () => { cancelled = true; window.clearTimeout(syncTimeout); };
-  }, [hydrated, session, syncVersion]);
+  }, [hydrated, syncSession, syncVersion]);
 
   async function signOut() { await liveSignOut(); setSession(null); setActive("Marketplace"); toast.success("Signed out"); }
   function finishTour(skipped: boolean) {
