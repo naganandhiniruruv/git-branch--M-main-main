@@ -38,6 +38,7 @@ import { categories, categoryVisual } from "@/lib/sheplates-data";
 import { demoAccounts, type DemoSession } from "@/lib/sheplates-v2-data";
 import { nutritionLooksConsistent, type Nutrition } from "@/lib/nutrition";
 import {
+  acceptLiveThirdPartyDelivery, issueLiveThirdPartyDeliveryCode, verifyLiveThirdPartyDeliveryCode,
   decideLiveVendorVerification, getAccessToken, isLiveSupabaseMode, isSupabaseConfigured,
   loadLiveCustomerPreference, loadLiveCustomerMemory, clearLiveCustomerMemory, loadLiveMarketplace, loadLiveOperationsWorkspace, loadLiveVendorWorkspace, loadLiveCommerceSnapshot,
   loadLiveNotifications, markLiveNotificationsRead, saveLiveCustomerProfile,
@@ -84,7 +85,10 @@ function ProductGlyph({ category, iconClassName = "size-6" }: { category: string
 }
 
 type Role = DemoSession["role"];
-type DeliveryMode = "Vendor delivery" | "Self pickup";
+type DeliveryMode = "Vendor delivery" | "Self pickup" | "Third-party delivery";
+
+
+
 type Verification = "Draft" | "Submitted" | "Under review" | "Changes required" | "Verified" | "Rejected";
 export type Product = {
   id: string; vendorId: string; name: string; category: string; emoji: string; baseUnit: string;
@@ -142,9 +146,13 @@ type Schedule = {
 type Order = {
   id: string; scheduleId?: string; customerEmail: string; vendorId: string; productId?: string;
   description: string; quantity: number; unit: string; total: number; date: string; slot: string; deliveryAddress?: string;
-  mode: DeliveryMode; status: "Scheduled" | "Confirmed" | "Preparing" | "Ready" | "Out for delivery" | "Ready for pickup" | "Completed" | "Cancellation requested" | "Cancelled";
-  payment: "Pending" | "Paid" | "Reversal pending" | "Refunded";
+mode: DeliveryMode; status: "Scheduled" | "Confirmed" | "Preparing" | "Ready" | "Out for delivery" | "Ready for pickup" | "Completed" | "Delivered" | "Cancellation requested" | "Cancelled";  payment: "Pending" | "Paid" | "Reversal pending" | "Refunded";
   trackingLatitude?: number; trackingLongitude?: number; cancellationFee?: number;
+};
+type ThirdPartyDeliveryRequest = {
+  orderId: string; customerId: string; vendorId: string; notes: string;
+  status: "pending" | "accepted" | "delivered" | "expired" | "locked";
+  acceptedAt?: string; codeExpiresAt?: string; codeIssuedCount: number; deliveredAt?: string;
 };
 type Staff = { id: string; vendorId: string; name: string; phone: string; active: boolean };
 type Assignment = { id: string; orderId: string; staffId: string; assignedAt: string };
@@ -171,7 +179,7 @@ type TasteProfileRow = { customerEmail: string; weights: TasteWeights; onboarded
 
 export type V3State = {
   customers: CustomerProfile[]; vendors: Vendor[]; products: Product[]; schedules: Schedule[];
-  orders: Order[]; staff: Staff[]; assignments: Assignment[]; requirements: Requirement[];
+  orders: Order[]; thirdPartyDeliveries: ThirdPartyDeliveryRequest[]; thirdPartyDeliveryAvailable: boolean; staff: Staff[]; assignments: Assignment[]; requirements: Requirement[];
   quotes: Quote[]; markups: Record<string, number>; notifications: Notification[];
   cancellations: Cancellation[]; audit: Audit[];
   cart: CartItem[]; tickets: Ticket[]; transactions: Transaction[]; staffAccounts: StaffAccount[];
@@ -182,8 +190,7 @@ export type V3State = {
 };
 
 const EMPTY_STATE: V3State = {
-  customers: [], vendors: [], products: [], schedules: [], orders: [], staff: [], assignments: [],
-  requirements: [], quotes: [], markups: {}, notifications: [], cancellations: [], audit: [], cart: [], tickets: [],
+customers: [], vendors: [], products: [], schedules: [], orders: [], thirdPartyDeliveries: [], thirdPartyDeliveryAvailable: false, staff: [], assignments: [],  requirements: [], quotes: [], markups: {}, notifications: [], cancellations: [], audit: [], cart: [], tickets: [],
   transactions: [], staffAccounts: [], campaigns: [], merchandising: { featuredProductIds: [], recommendationPopupEnabled: true, maxFeatured: 6 },
   wishlist: [], reviews: [], tasteProfiles: [], productAttributes: {},
   foodDrops: [], foodDropClaims: [],
@@ -443,6 +450,8 @@ function repairSavedState(raw: V3State): V3State {
     // Discard those ambiguous entries instead of risking cross-role disclosure.
     notifications: (raw.notifications || []).filter((item) => Boolean(item.recipientRole)),
     cart: raw.cart || [],
+    thirdPartyDeliveries: raw.thirdPartyDeliveries || [],
+    thirdPartyDeliveryAvailable: raw.thirdPartyDeliveryAvailable || false,
     wishlist: raw.wishlist || [],
     tickets: raw.tickets || [],
     transactions: raw.transactions || [],
@@ -550,8 +559,7 @@ function marketplaceProductFromLive(row: LiveMarketplaceRow): Product {
 function liveOrderStatus(value: unknown): Order["status"] {
   const map: Record<string, Order["status"]> = {
     awarded: "Scheduled", confirmed: "Confirmed", preparing: "Preparing", ready: "Ready",
-    out_for_delivery: "Out for delivery", ready_for_pickup: "Ready for pickup", completed: "Completed",
-    cancellation_requested: "Cancellation requested", cancelled: "Cancelled",
+out_for_delivery: "Out for delivery", ready_for_pickup: "Ready for pickup", completed: "Completed", delivered: "Delivered",    cancellation_requested: "Cancellation requested", cancelled: "Cancelled",
   };
   return map[String(value || "")] || "Scheduled";
 }
@@ -561,15 +569,15 @@ function livePaymentStatus(payments: unknown, orderStatus?: unknown): Order["pay
   if (statuses.some((status) => status === "refunded")) return "Refunded";
   if (statuses.some((status) => status.includes("reversal"))) return "Reversal pending";
   if (statuses.some((status) => ["paid", "captured", "success", "succeeded"].includes(status))) return "Paid";
-  const progressed = ["confirmed", "preparing", "ready", "out_for_delivery", "ready_for_pickup", "completed"].includes(String(orderStatus || "").toLowerCase());
-  return progressed ? "Paid" : "Pending";
+const progressed = ["confirmed", "preparing", "ready", "out_for_delivery", "ready_for_pickup", "completed", "delivered"].includes(String(orderStatus || "").toLowerCase());  return progressed ? "Paid" : "Pending";
 }
-type LiveCommerceStateSnapshot = { orders?: Array<Record<string, unknown>>; schedules?: Array<Record<string, unknown>>; staff?: Array<Record<string, unknown>>; assignments?: Array<Record<string, unknown>>; cart?: Record<string, unknown> | null; cartItems?: Array<Record<string, unknown>> };
-function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot, session: DemoSession): V3State {
+type LiveCommerceStateSnapshot = { orders?: Array<Record<string, unknown>>; schedules?: Array<Record<string, unknown>>; staff?: Array<Record<string, unknown>>; assignments?: Array<Record<string, unknown>>; thirdPartyDeliveries?: Array<Record<string, unknown>>; thirdPartyDeliveryAvailable?: boolean; cart?: Record<string, unknown> | null; cartItems?: Array<Record<string, unknown>> };function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot, session: DemoSession): V3State {
   const orderRows = snapshot.orders || [];
   const orders: Order[] = orderRows.map((row) => {
     const items = Array.isArray(row.order_items) ? row.order_items as Array<Record<string, unknown>> : [];
     const first = items[0];
+    const fulfilmentMode = String(row.fulfilment_mode);
+    const isThirdParty = fulfilmentMode === "third_party_delivery";
     return {
       id: String(row.id), scheduleId: row.schedule_id ? String(row.schedule_id) : undefined,
       customerEmail: session.role === "customer" ? session.email : String(row.customer_id || "customer"), vendorId: String(row.vendor_id),
@@ -578,8 +586,7 @@ function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot
       quantity: Number(first?.quantity || items.length || 1), unit: String(first?.unit || "items"), total: Number(row.customer_total || 0),
       date: String(row.scheduled_date || ""), slot: String(row.scheduled_slot || "Vendor to confirm"),
       deliveryAddress: typeof row.delivery_address === "string" ? row.delivery_address : undefined,
-      mode: String(row.fulfilment_mode) === "self_pickup" ? "Self pickup" : "Vendor delivery",
-      status: liveOrderStatus(row.status), payment: livePaymentStatus(row.payments, row.status),
+mode: isThirdParty ? "Third-party delivery" : fulfilmentMode === "self_pickup" ? "Self pickup" : "Vendor delivery",      status: liveOrderStatus(row.status), payment: livePaymentStatus(row.payments, row.status),
       trackingLatitude: row.tracking_latitude == null ? undefined : Number(row.tracking_latitude),
       trackingLongitude: row.tracking_longitude == null ? undefined : Number(row.tracking_longitude),
       cancellationFee: Number(row.cancellation_fee || 0),
@@ -590,8 +597,7 @@ function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot
     id: String(row.id), customerEmail: session.role === "customer" ? session.email : String(row.customer_id || "customer"), productId: String(row.menu_item_id), vendorId: String(row.vendor_id),
     startDate: String(row.start_date), endDate: row.end_date ? String(row.end_date) : "", recurrence: (String(row.recurrence || "once")[0].toUpperCase() + String(row.recurrence || "once").slice(1)) as Schedule["recurrence"],
     weekdays: Array.isArray(row.weekdays) ? (row.weekdays as number[]).map((day) => dayNames[Number(day)]).filter(Boolean) : [], timeSlot: String(row.scheduled_slot),
-    quantity: Number(row.quantity || 1), unit: String(row.unit || "pack"), mode: String(row.fulfilment_mode) === "self_pickup" ? "Self pickup" : "Vendor delivery",
-    estimatedOccurrences: 1, status: String(row.status || "active") === "paused" ? "Paused" : String(row.status || "active") === "cancelled" ? "Cancelled" : String(row.status || "active") === "completed" ? "Completed" : String(row.status || "active") === "awaiting_payment" ? "Awaiting payment" : "Active",
+quantity: Number(row.quantity || 1), unit: String(row.unit || "pack"), mode: String(row.fulfilment_mode) === "third_party_delivery" ? "Third-party delivery" : String(row.fulfilment_mode) === "self_pickup" ? "Self pickup" : "Vendor delivery",    estimatedOccurrences: 1, status: String(row.status || "active") === "paused" ? "Paused" : String(row.status || "active") === "cancelled" ? "Cancelled" : String(row.status || "active") === "completed" ? "Completed" : String(row.status || "active") === "awaiting_payment" ? "Awaiting payment" : "Active",
     nextDeliveryAt: row.next_delivery_at ? String(row.next_delivery_at) : undefined, whatsappReminder: row.whatsapp_reminder_enabled !== false,
   }));
   const orderScheduleIds = new Set(orders.map((order) => order.scheduleId).filter(Boolean) as string[]);
@@ -599,9 +605,20 @@ function mergeLiveCommerce(current: V3State, snapshot: LiveCommerceStateSnapshot
   const mergedSchedules = [...schedules, ...preservedSchedules];
   const staff: Staff[] = (snapshot.staff || []).map((row) => ({ id: String(row.id), vendorId: String(row.vendor_id), name: String(row.full_name || "Delivery person"), phone: String(row.phone || ""), active: row.active !== false }));
   const assignments: Assignment[] = (snapshot.assignments || []).map((row) => ({ id: String(row.id), orderId: String(row.order_id), staffId: String(row.delivery_staff_id), assignedAt: String(row.assigned_at || "") }));
+  const thirdPartyDeliveries: ThirdPartyDeliveryRequest[] = (snapshot.thirdPartyDeliveries || []).map((row) => ({
+    orderId: String(row.order_id), customerId: String(row.customer_id), vendorId: String(row.vendor_id),
+    notes: String(row.customer_notes || ""), status: String(row.status || "pending") as ThirdPartyDeliveryRequest["status"],
+    acceptedAt: row.accepted_at ? String(row.accepted_at) : undefined,
+    codeExpiresAt: row.code_expires_at ? String(row.code_expires_at) : undefined,
+    codeIssuedCount: Number(row.code_issued_count || 0),
+    deliveredAt: row.delivered_at ? String(row.delivered_at) : undefined,
+  }));
   const syncedCart: CartItem[] = session.role === "customer" ? (snapshot.cartItems || []).map((row) => ({ id: String(row.id), customerEmail: session.email, productId: String(row.menu_item_id), quantity: Math.max(0.001, Number(row.quantity || 1)) })) : [];
   const cart = session.role === "customer" ? [...current.cart.filter((item) => item.customerEmail !== session.email), ...syncedCart] : current.cart;
-  return { ...current, orders, schedules: mergedSchedules, staff, assignments, cart };
+  return {
+    ...current, orders, schedules: mergedSchedules, staff, assignments, thirdPartyDeliveries, cart,
+    thirdPartyDeliveryAvailable: snapshot.thirdPartyDeliveryAvailable === true,
+  };
 }
 async function findLocation(params: { lat?: number; lng?: number; address?: string }) {
   const query = params.address ? `q=${encodeURIComponent(params.address)}` : `lat=${params.lat}&lng=${params.lng}`;
@@ -1615,8 +1632,7 @@ function Marketplace({ session, state, setState, navigate, openAgent, openVendor
     </section>
 
     <ScheduleDialog product={selected} close={() => setSelected(null)} session={session} state={state} setState={setState} initialStartDate={deliveryDate} onCreated={() => navigate("Cart")} />
-    <Dialog open={locationOpen} onOpenChange={setLocationOpen}><DialogContent className="max-h-[92vh] overflow-x-hidden overflow-y-auto rounded-[26px] sm:max-w-3xl [&>*]:min-w-0"><DialogHeader><DialogTitle className="text-lg font-black">Confirm your delivery location</DialogTitle><DialogDescription>Use fresh GPS for your actual position, or search a complete address. Products are matched using the saved coordinates—not the address text.</DialogDescription></DialogHeader><Field label="Full delivery address"><Textarea value={draftAddress} onChange={(event) => setDraftAddress(event.target.value)} placeholder="Flat, street, landmark, area, city and PIN" className="min-h-24 rounded-xl" /></Field><LocationSuggestions query={draftAddress} onSelect={(place) => { setDraftAddress(place.address); setDraftCoords({ lat: place.latitude, lng: place.longitude }); }} /><div className="flex flex-wrap gap-2"><Button onClick={detectLocation} disabled={locating} className="rounded-xl bg-[#5ba400]"><LocateFixed className={locating ? "animate-spin" : ""} />{locating ? "Getting fresh GPS…" : "Use my actual GPS location"}</Button><Button onClick={findTypedLocation} disabled={mapBusy} variant="outline" className="rounded-xl"><Search className={mapBusy ? "animate-pulse" : ""} />{mapBusy ? "Searching…" : "Find typed address"}</Button></div><MapPreview lat={draftCoords.lat} lng={draftCoords.lng} radius={2} label="Customer delivery pin" /><Button onClick={saveLocation} className="h-12 rounded-xl bg-[#ef3d3d] font-black"><Check />Save this delivery pin</Button></DialogContent></Dialog>
-  </div>;
+<Dialog open={locationOpen} onOpenChange={setLocationOpen}><DialogContent className="max-h-[92vh] overflow-x-hidden overflow-y-auto rounded-[26px] sm:max-w-3xl *:min-w-0"><DialogHeader><DialogTitle className="text-lg font-black">Confirm your delivery location</DialogTitle><DialogDescription>Use fresh GPS for your actual position, or search a complete address. Products are matched using the saved coordinates—not the address text.</DialogDescription></DialogHeader><Field label="Full delivery address"><Textarea value={draftAddress} onChange={(event) => setDraftAddress(event.target.value)} placeholder="Flat, street, landmark, area, city and PIN" className="min-h-24 rounded-xl" /></Field><LocationSuggestions query={draftAddress} onSelect={(place) => { setDraftAddress(place.address); setDraftCoords({ lat: place.latitude, lng: place.longitude }); }} /><div className="flex flex-wrap gap-2"><Button onClick={detectLocation} disabled={locating} className="rounded-xl bg-[#5ba400]"><LocateFixed className={locating ? "animate-spin" : ""} />{locating ? "Getting fresh GPS…" : "Use my actual GPS location"}</Button><Button onClick={findTypedLocation} disabled={mapBusy} variant="outline" className="rounded-xl"><Search className={mapBusy ? "animate-pulse" : ""} />{mapBusy ? "Searching…" : "Find typed address"}</Button></div><MapPreview lat={draftCoords.lat} lng={draftCoords.lng} radius={2} label="Customer delivery pin" /><Button onClick={saveLocation} className="h-12 rounded-xl bg-[#ef3d3d] font-black"><Check />Save this delivery pin</Button></DialogContent></Dialog>  </div>;
 }
 
 function ScheduleDialog({ product, close, session, state, setState, initialStartDate, onCreated }: { product: Product | null; close: () => void; session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; initialStartDate?: string; onCreated?: () => void }) {
@@ -1627,12 +1643,13 @@ function ScheduleDialog({ product, close, session, state, setState, initialStart
   const [slot, setSlot] = useState("06:00–07:00 AM");
   const [quantity, setQuantity] = useState(1);
   const [mode, setMode] = useState<DeliveryMode>("Vendor delivery");
-  useEffect(() => { if (product) queueMicrotask(() => { setQuantity(product.quantityStep); setRecurrence("Once"); setDays([]); setStartDate(initialStartDate && initialStartDate >= tomorrow() ? initialStartDate : tomorrow()); setEndDate(""); }); }, [product, initialStartDate]);
-  if (!product) return null;
+const [deliveryInstructions, setDeliveryInstructions] = useState("");
+  const supportsVendorDelivery = product ? state.vendors.find((item) => item.id === product.vendorId)?.delivery === true : false;
+  const supportsPickup = product ? state.vendors.find((item) => item.id === product.vendorId)?.pickup === true : false;
+  useEffect(() => { if (product) queueMicrotask(() => { setQuantity(product.quantityStep); setRecurrence("Once"); setDays([]); setStartDate(initialStartDate && initialStartDate >= tomorrow() ? initialStartDate : tomorrow()); setEndDate(""); setDeliveryInstructions(""); setMode(supportsVendorDelivery ? "Vendor delivery" : supportsPickup ? "Self pickup" : "Third-party delivery"); }); }, [product, initialStartDate, supportsVendorDelivery, supportsPickup]);  if (!product) return null;
   const scheduledProduct = product;
   const vendor = state.vendors.find((v) => v.id === scheduledProduct.vendorId)!;
-  const modes = [vendor.delivery && "Vendor delivery", vendor.pickup && "Self pickup"].filter(Boolean) as DeliveryMode[];
-  const effectiveEnd = endDate || (recurrence === "Once" ? startDate : addDaysISO(startDate || tomorrow(), 29));
+const modes: DeliveryMode[] = ["Vendor delivery", "Self pickup", "Third-party delivery"];  const effectiveEnd = endDate || (recurrence === "Once" ? startDate : addDaysISO(startDate || tomorrow(), 29));
   const startMs = new Date(`${startDate || tomorrow()}T12:00:00`).getTime();
   const endMs = new Date(`${effectiveEnd}T12:00:00`).getTime();
   const rangeLength = Math.max(1, Math.min(366, Math.floor((endMs - startMs) / 86400000) + 1));
@@ -1650,11 +1667,14 @@ function ScheduleDialog({ product, close, session, state, setState, initialStart
     if (endDate && endDate < startDate) return toast.error("End date must be after the start date");
     if (recurrence === "Custom" && !days.length) return toast.error("Choose at least one weekday");
     if (!occurrences) return toast.error("This schedule has no delivery dates. Adjust the dates or repeat pattern.");
+    if (mode === "Third-party delivery" && !isLiveSupabaseMode()) return toast.error("Third-party delivery requires a live customer account.");
+    if (mode === "Third-party delivery" && recurrence !== "Once") return toast.error("Third-party delivery is available for one-time plans only.");
+    if (mode === "Third-party delivery" && !deliveryInstructions.trim()) return toast.error("Add delivery instructions for the third-party handler.");
+    if (deliveryInstructions.length > 1000) return toast.error("Delivery instructions must be 1,000 characters or fewer.");
     try {
       let scheduleId = id("SCH"); let orderId = id("ORD");
       if (isLiveSupabaseMode()) {
-        const saved = await createLiveScheduledCheckout({ productId: scheduledProduct.id, startDate, endDate: endDate || undefined, recurrence, weekdays: days, slot, quantity, unit: scheduledProduct.baseUnit, mode, customerPrice: finalPrice(scheduledProduct, state), perDeliveryTotal: perDelivery, total: price, whatsappReminder: true });
-        scheduleId = String(saved.scheduleId); orderId = String(saved.orderId);
+const saved = await createLiveScheduledCheckout({ productId: scheduledProduct.id, startDate, endDate: endDate || undefined, recurrence, weekdays: days, slot, quantity, unit: scheduledProduct.baseUnit, mode, deliveryInstructions: deliveryInstructions.trim(), customerPrice: finalPrice(scheduledProduct, state), perDeliveryTotal: perDelivery, total: price, whatsappReminder: true });        scheduleId = String(saved.scheduleId); orderId = String(saved.orderId);
       }
       const schedule: Schedule = { id: scheduleId, customerEmail: session.email, productId: scheduledProduct.id, vendorId: scheduledProduct.vendorId, startDate, endDate, recurrence, weekdays: days, timeSlot: slot, quantity, unit: scheduledProduct.baseUnit, mode, estimatedOccurrences: occurrences, status: "Active", nextDeliveryAt: deliveryDates[0], whatsappReminder: true };
       const order: Order = { id: orderId, scheduleId, customerEmail: session.email, vendorId: scheduledProduct.vendorId, productId: scheduledProduct.id, description: scheduledProduct.name, quantity, unit: scheduledProduct.baseUnit, total: price, date: deliveryDates[0], slot, mode, status: "Scheduled", payment: "Pending" };
@@ -1664,8 +1684,7 @@ function ScheduleDialog({ product, close, session, state, setState, initialStart
     } catch (error) { toast.error(error instanceof Error ? error.message : "Schedule could not be saved"); }
   }
 
-  return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="max-h-[94vh] overflow-y-auto rounded-[28px] p-0 sm:max-w-5xl"><div className="border-b bg-[#111611] p-6 text-white"><DialogHeader><DialogTitle className="flex items-center gap-3 text-lg font-black"><span className="grid size-11 place-items-center rounded-xl bg-[#5ba400]"><CalendarDays /></span>Schedule {product.name}</DialogTitle><DialogDescription className="text-white/60">Choose the exact first delivery date, delivery period, repeat pattern, time and pack quantity.</DialogDescription></DialogHeader></div><div className="grid gap-0 lg:grid-cols-[1.2fr_.8fr]"><div className="space-y-6 p-6"><div className="grid gap-4 sm:grid-cols-2"><Field label={recurrence === "Once" ? "Delivery date" : "First delivery date"}><input aria-label={recurrence === "Once" ? "Delivery date" : "First delivery date"} type="date" min={tomorrow()} value={startDate} onChange={(e) => { const nextDate = e.target.value; setStartDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} className={inputClass} /></Field><Field label="Ends (optional)"><input type="date" min={startDate || tomorrow()} value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputClass} /></Field></div><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Repeat</div><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{(["Once", "Daily", "Weekly", "Custom"] as const).map((item) => <button key={item} type="button" onClick={() => setRecurrence(item)} className={`rounded-xl border p-3 text-sm font-black ${recurrence === item ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : ""}`}>{item}</button>)}</div></div>{recurrence === "Custom" && <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Delivery days</div><div className="flex flex-wrap gap-2">{weekdays.map((day) => <button type="button" key={day} onClick={() => setDays(days.includes(day) ? days.filter((x) => x !== day) : [...days, day])} className={`grid size-11 place-items-center rounded-full border text-xs font-black ${days.includes(day) ? "border-[#5ba400] bg-[#5ba400] text-white" : ""}`}>{day}</button>)}</div></div>}<Field label="Preferred time"><Select value={slot} onValueChange={setSlot}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{["06:00–07:00 AM", "07:00–08:00 AM", "08:00–09:00 AM", "12:00–01:00 PM", "05:00–06:00 PM", "07:00–08:00 PM"].map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Number of packs per delivery</div><div className="flex flex-wrap items-center gap-3"><Button variant="outline" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="size-11 rounded-xl">−</Button><div className="min-w-40 rounded-2xl border border-stone-200/80 bg-white/90 px-4 py-3 text-center text-base font-black shadow-sm">{quantity} × {product.baseUnit}</div><Button variant="outline" onClick={() => setQuantity(quantity + 1)} className="size-11 rounded-xl">+</Button></div></div><Field label="Fulfilment"><Select value={modes.includes(mode) ? mode : modes[0]} onValueChange={(v) => setMode(v as DeliveryMode)}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{modes.map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div className="rounded-2xl bg-[#f6f8f2] p-4"><div className="text-xs font-black uppercase tracking-widest text-stone-500">Delivery dates</div><div className="mt-2 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">{deliveryDates.slice(0, 60).map((date) => <span key={date} className="rounded-full border bg-white px-2.5 py-1 text-xs font-bold">{new Date(`${date}T12:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>)}{deliveryDates.length > 60 && <span className="px-2 py-1 text-xs text-stone-500">+{deliveryDates.length - 60} more</span>}</div></div></div><div className="bg-[#f5f7f1] p-6"><div className="surface-card rounded-3xl p-5"><div className="grid size-16 place-items-center rounded-2xl" style={{ background: categoryVisual(product.category).bg }}><ProductGlyph category={product.category} iconClassName="size-8" /></div><h3 className="mt-4 text-xl font-black">{product.name}</h3><p className="text-sm text-stone-500">{vendor.businessName} · {product.baseUnit}</p><div className="mt-5 space-y-3 text-sm"><Review label="Frequency" value={recurrence} /><Review label="Confirmed delivery dates" value={String(occurrences)} />{hasNutrition ? <Review label="Calories (all planned packs)" value={`${calories.toLocaleString("en-IN")} kcal`} /> : <Review label="Nutrition" value="Pending review" />}<Review label="Per delivery" value={money(perDelivery)} /><Review label="Total to activate schedule" value={money(price)} /></div><div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">The schedule remains in checkout until payment. After payment, all confirmed delivery dates appear in My Schedule and Orders, and the vendor receives the order.</div><Button onClick={save} className="mt-5 h-12 w-full rounded-xl bg-[#ef3d3d] font-black hover:bg-[#d92f2f]"><CreditCard />Continue to payment</Button></div></div></div></DialogContent></Dialog>;
-}
+return <Dialog open onOpenChange={(open) => !open && close()}><DialogContent className="max-h-[94vh] overflow-y-auto rounded-[28px] p-0 sm:max-w-5xl"><div className="border-b bg-[#111611] p-6 text-white"><DialogHeader><DialogTitle className="flex items-center gap-3 text-lg font-black"><span className="grid size-11 place-items-center rounded-xl bg-[#5ba400]"><CalendarDays /></span>Schedule {product.name}</DialogTitle><DialogDescription className="text-white/60">Choose the exact first delivery date, delivery period, repeat pattern, time and pack quantity.</DialogDescription></DialogHeader></div><div className="grid gap-0 lg:grid-cols-[1.2fr_.8fr]">    <div className="space-y-6 p-6"><div className="grid gap-4 sm:grid-cols-2"><Field label={recurrence === "Once" ? "Delivery date" : "First delivery date"}><input aria-label={recurrence === "Once" ? "Delivery date" : "First delivery date"} type="date" min={tomorrow()} value={startDate} onChange={(e) => { const nextDate = e.target.value; setStartDate(nextDate); if (endDate && endDate < nextDate) setEndDate(nextDate); }} className={inputClass} /></Field><Field label="Ends (optional)"><input type="date" min={startDate || tomorrow()} value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputClass} /></Field></div><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Repeat</div><div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{(["Once", "Daily", "Weekly", "Custom"] as const).map((item) => <button key={item} type="button" onClick={() => setRecurrence(item)} className={`rounded-xl border p-3 text-sm font-black ${recurrence === item ? "border-[#5ba400] bg-[#eff7e5] text-[#477f00]" : ""}`}>{item}</button>)}</div></div>{recurrence === "Custom" && <div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Delivery days</div><div className="flex flex-wrap gap-2">{weekdays.map((day) => <button type="button" key={day} onClick={() => setDays(days.includes(day) ? days.filter((x) => x !== day) : [...days, day])} className={`grid size-11 place-items-center rounded-full border text-xs font-black ${days.includes(day) ? "border-[#5ba400] bg-[#5ba400] text-white" : ""}`}>{day}</button>)}</div></div>}<Field label="Preferred time"><Select value={slot} onValueChange={setSlot}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{["06:00–07:00 AM", "07:00–08:00 AM", "08:00–09:00 AM", "12:00–01:00 PM", "05:00–06:00 PM", "07:00–08:00 PM"].map((x) => <SelectItem key={x} value={x}>{x}</SelectItem>)}</SelectContent></Select></Field><div><div className="mb-2 text-xs font-black uppercase tracking-widest text-stone-500">Number of packs per delivery</div><div className="flex flex-wrap items-center gap-3"><Button variant="outline" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="size-11 rounded-xl">−</Button><div className="min-w-40 rounded-2xl border border-stone-200/80 bg-white/90 px-4 py-3 text-center text-base font-black shadow-sm">{quantity} × {product.baseUnit}</div><Button variant="outline" onClick={() => setQuantity(quantity + 1)} className="size-11 rounded-xl">+</Button></div></div><Field label="Fulfilment"><Select value={modes.includes(mode) ? mode : modes[0]} onValueChange={(v) => { const nextMode = v as DeliveryMode; setMode(nextMode); if (nextMode === "Third-party delivery" && recurrence !== "Once") { setRecurrence("Once"); setEndDate(""); setDays([]); } }}><SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger><SelectContent>{modes.map((x) => <SelectItem key={x} value={x} disabled={x === "Third-party delivery" ? !isLiveSupabaseMode() || !state.thirdPartyDeliveryAvailable : x === "Vendor delivery" ? !supportsVendorDelivery : !supportsPickup}>{x}</SelectItem>)}</SelectContent></Select></Field>{mode === "Third-party delivery" && <Field label="Instructions for the delivery handler"><Textarea maxLength={1000} value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} placeholder="Gate code, drop-off preference, or other handover details" className="min-h-24 rounded-xl" /><span className="text-right text-xs text-stone-500">{deliveryInstructions.length}/1,000</span><p className="text-xs text-stone-500">Third-party delivery is for one-time plans. After the vendor accepts, request a secure in-app handover code from Orders.</p></Field>}{isLiveSupabaseMode() && !state.thirdPartyDeliveryAvailable && <p className="text-xs text-amber-800">Third-party delivery is unavailable until its Supabase migrations are applied.</p>}<div className="rounded-2xl bg-[#f6f8f2] p-4"><div className="text-xs font-black uppercase tracking-widest text-stone-500">Delivery dates</div><div className="mt-2 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">{deliveryDates.slice(0, 60).map((date) => <span key={date} className="rounded-full border bg-white px-2.5 py-1 text-xs font-bold">{new Date(`${date}T12:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>)}{deliveryDates.length > 60 && <span className="px-2 py-1 text-xs text-stone-500">+{deliveryDates.length - 60} more</span>}</div></div></div><div className="bg-[#f5f7f1] p-6"><div className="surface-card rounded-3xl p-5"><div className="grid size-16 place-items-center rounded-2xl" style={{ background: categoryVisual(product.category).bg }}><ProductGlyph category={product.category} iconClassName="size-8" /></div><h3 className="mt-4 text-xl font-black">{product.name}</h3><p className="text-sm text-stone-500">{vendor.businessName} · {product.baseUnit}</p><div className="mt-5 space-y-3 text-sm"><Review label="Frequency" value={recurrence} /><Review label="Confirmed delivery dates" value={String(occurrences)} />{hasNutrition ? <Review label="Calories (all planned packs)" value={`${calories.toLocaleString("en-IN")} kcal`} /> : <Review label="Nutrition" value="Pending review" />}<Review label="Per delivery" value={money(perDelivery)} /><Review label="Total to activate schedule" value={money(price)} /></div><div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-900">The schedule remains in checkout until payment. After payment, all confirmed delivery dates appear in My Schedule and Orders, and the vendor receives the order.</div><Button onClick={save} className="mt-5 h-12 w-full rounded-xl bg-[#ef3d3d] font-black hover:bg-[#d92f2f]"><CreditCard />Continue to payment</Button></div></div></div></DialogContent></Dialog>;}
 function WishlistView({ session, state, setState }: { session: DemoSession; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>> }) {
   const items = state.wishlist.filter((w) => w.customerEmail === session.email);
   function remove(productId: string) {
@@ -1730,9 +1749,9 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
   const [selectedAddressId, setSelectedAddressId] = useState(savedAddresses.find((address) => address.isDefault)?.id || savedAddresses[0]?.id || "");
   const [newAddress, setNewAddress] = useState("");
   const [useNewAddress, setUseNewAddress] = useState(false);
+  const [checkoutMode, setCheckoutMode] = useState<DeliveryMode>("Vendor delivery");
+  const [deliveryInstructions, setDeliveryInstructions] = useState("");
   const total = items.reduce((sum, item) => { const product = state.products.find((x) => x.id === item.productId); return sum + (product ? finalPrice(product, state) * item.quantity : 0); }, 0);
-  const singlePendingOrder = pendingOrders.length === 1 ? pendingOrders[0] : null;
-  useEffect(() => { if (!paying && singlePendingOrder) queueMicrotask(() => setPaying(singlePendingOrder)); }, [paying, singlePendingOrder]);
 
   async function persistOwnCart(nextOwn: CartItem[], createdBy: "customer" | "she_agent" = "customer") {
     setState((current) => ({ ...current, cart: [...current.cart.filter((item) => item.customerEmail !== session.email), ...nextOwn] }));
@@ -1769,13 +1788,24 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
       toast.error("Choose a saved delivery address or enter a new one.");
       return;
     }
+    if (checkoutMode === "Third-party delivery" && !isLiveSupabaseMode()) {
+      toast.error("Third-party delivery requires a live customer account.");
+      return;
+    }
+    if (checkoutMode === "Third-party delivery" && !deliveryInstructions.trim()) {
+      toast.error("Add delivery instructions for the third-party handler.");
+      return;
+    }
+    if (deliveryInstructions.length > 1000) {
+      toast.error("Delivery instructions must be 1,000 characters or fewer.");
+      return;
+    }
     if (isLiveSupabaseMode()) {
       setSavingCart(true);
       try {
         // Sync first so carts created on another device / older build are reconciled before checkout.
         await syncLiveCart({ items: items.map((item) => ({ productId: item.productId, quantity: item.quantity })) });
-        const result = await checkoutLiveCart({ scheduledDate: deliveryDate, slot: "07:00–08:00 AM", deliveryAddress: address });
-        const snapshot = result.snapshot as LiveCommerceStateSnapshot | undefined;
+const result = await checkoutLiveCart({ scheduledDate: deliveryDate, slot: "07:00–08:00 AM", deliveryAddress: address, mode: checkoutMode, deliveryInstructions: deliveryInstructions.trim() });        const snapshot = result.snapshot as LiveCommerceStateSnapshot | undefined;
         if (!snapshot) throw new Error("Checkout did not return the latest order state.");
         const next = mergeLiveCommerce(state, snapshot, session);
         setState(next);
@@ -1790,8 +1820,7 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
     }
     const first = state.products.find((x) => x.id === items[0].productId); if (!first) return;
     const vendor = state.vendors.find((x) => x.id === first.vendorId);
-    const order: Order = { id: id("ORD"), customerEmail: session.email, vendorId: first.vendorId, description: items.map((item) => state.products.find((x) => x.id === item.productId)?.name).filter(Boolean).join(", "), quantity: items.reduce((sum, x) => sum + x.quantity, 0), unit: "packs", total, date: deliveryDate, slot: "07:00–08:00 AM", deliveryAddress: address, mode: vendor?.delivery ? "Vendor delivery" : "Self pickup", status: "Scheduled", payment: "Pending", cancellationFee: 0 };
-    setState((current) => ({ ...current, orders: [order, ...current.orders], cart: current.cart.filter((item) => item.customerEmail !== session.email), notifications: [notice(session.email, "customer", "Checkout ready", `${order.description} is ready for payment.`), ...current.notifications] }));
+const order: Order = { id: id("ORD"), customerEmail: session.email, vendorId: first.vendorId, description: items.map((item) => state.products.find((x) => x.id === item.productId)?.name).filter(Boolean).join(", "), quantity: items.reduce((sum, x) => sum + x.quantity, 0), unit: "packs", total, date: deliveryDate, slot: "07:00–08:00 AM", deliveryAddress: address, mode: checkoutMode === "Vendor delivery" && !vendor?.delivery ? "Self pickup" : checkoutMode, status: "Scheduled", payment: "Pending", cancellationFee: 0 };    setState((current) => ({ ...current, orders: [order, ...current.orders], cart: current.cart.filter((item) => item.customerEmail !== session.email), notifications: [notice(session.email, "customer", "Checkout ready", `${order.description} is ready for payment.`), ...current.notifications] }));
     setAddressDialogOpen(false);
     setPaying(order);
   }
@@ -1810,6 +1839,21 @@ function CartView({ session, state, setState, navigate }: { session: DemoSession
           <DialogDescription>Select a saved address or enter a new one before continuing to payment.</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
+          <Field label="Delivery method">
+            <Select value={checkoutMode} onValueChange={(value) => setCheckoutMode(value as DeliveryMode)}>
+              <SelectTrigger className="h-11 rounded-xl"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Vendor delivery">Vendor delivery</SelectItem>
+                <SelectItem value="Self pickup">Self-pickup</SelectItem>
+                <SelectItem value="Third-party delivery" disabled={!isLiveSupabaseMode() || !state.thirdPartyDeliveryAvailable}>3rd Party Delivery</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          {isLiveSupabaseMode() && !state.thirdPartyDeliveryAvailable && <p className="text-xs text-amber-800">Third-party delivery is unavailable until its Supabase migrations are applied.</p>}
+          {checkoutMode === "Third-party delivery" && <Field label="Instructions for the delivery handler">
+            <Textarea maxLength={1000} value={deliveryInstructions} onChange={(event) => setDeliveryInstructions(event.target.value)} placeholder="Gate code, drop-off preference, or other handover details" className="min-h-24 rounded-xl" />
+            <span className="text-right text-xs text-stone-500">{deliveryInstructions.length}/1,000</span>
+          </Field>}
           {savedAddresses.map((address) => (
             <button type="button" key={address.id} aria-pressed={!useNewAddress && selectedAddressId === address.id} onClick={() => { setSelectedAddressId(address.id); setUseNewAddress(false); }} className={`w-full rounded-2xl border p-4 text-left transition ${!useNewAddress && selectedAddressId === address.id ? "border-[#5ba400] bg-[#f5faef]" : "border-stone-200 bg-white"}`}>
               <span className="flex items-center justify-between gap-3"><span className="font-black">{address.label}{address.isDefault ? " · Default" : ""}</span><MapPin className="size-4 shrink-0 text-[#5f8f2d]" /></span>
@@ -2177,6 +2221,9 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
   const [rescheduling, setRescheduling] = useState<Order | null>(null);
   const [paying, setPaying] = useState<Order | null>(null);
   const [ratingOrder, setRatingOrder] = useState<Order | null>(null);
+  const [deliveryCodes, setDeliveryCodes] = useState<Record<string, { code: string; expiresAt: string }>>({});
+  const [verificationInputs, setVerificationInputs] = useState<Record<string, string>>({});
+  const [deliveryActionId, setDeliveryActionId] = useState<string | null>(null);
   const [dateMode, setDateMode] = useState<"today" | "tomorrow" | "all" | "custom">(scope === "customer" ? "all" : "today");
   const [customDate, setCustomDate] = useState(todayISO());
   const targetDate = dateMode === "today" ? todayISO() : dateMode === "tomorrow" ? tomorrow() : dateMode === "custom" ? customDate : "";
@@ -2185,6 +2232,63 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
   const totalValue = baseOrders.reduce((sum, item) => sum + item.total, 0);
 
   async function update(order: Order, status: Order["status"]) { try { if (isLiveSupabaseMode()) await updateLiveOrderStatus(order.id, status); setState((s) => ({ ...s, orders: s.orders.map((x) => x.id === order.id ? { ...x, status } : x) })); showDeviceNotification(`Order ${status}`, order.description); toast.success("Order status updated"); } catch (error) { toast.error(error instanceof Error ? error.message : "Order status could not be saved"); } }
+  async function acceptThirdPartyRequest(order: Order) {
+    setDeliveryActionId(order.id);
+    try {
+      await acceptLiveThirdPartyDelivery(order.id);
+      setState((current) => ({
+        ...current,
+        thirdPartyDeliveries: current.thirdPartyDeliveries.map((request) => request.orderId === order.id
+          ? { ...request, status: "accepted", acceptedAt: new Date().toISOString() }
+          : request),
+      }));
+      toast.success("Request accepted. The customer can now issue a secure handover code.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The delivery request could not be accepted");
+    } finally { setDeliveryActionId(null); }
+  }
+  async function issueThirdPartyCode(order: Order) {
+    setDeliveryActionId(order.id);
+    try {
+      const issued = await issueLiveThirdPartyDeliveryCode(order.id);
+      setDeliveryCodes((current) => ({ ...current, [order.id]: issued }));
+      setState((current) => ({
+        ...current,
+        thirdPartyDeliveries: current.thirdPartyDeliveries.map((request) => request.orderId === order.id
+          ? { ...request, codeExpiresAt: issued.expiresAt, codeIssuedCount: request.codeIssuedCount + 1 }
+          : request),
+      }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "A handover code could not be issued");
+    } finally { setDeliveryActionId(null); }
+  }
+  async function verifyThirdPartyCode(order: Order) {
+    const code = verificationInputs[order.id] || "";
+    setDeliveryActionId(order.id);
+    try {
+      await verifyLiveThirdPartyDeliveryCode(order.id, code);
+      setVerificationInputs((current) => ({ ...current, [order.id]: "" }));
+      setDeliveryCodes((current) => { const next = { ...current }; delete next[order.id]; return next; });
+      setState((current) => ({
+        ...current,
+        orders: current.orders.map((item) => item.id === order.id ? { ...item, status: "Delivered" } : item),
+        thirdPartyDeliveries: current.thirdPartyDeliveries.map((request) => request.orderId === order.id
+          ? { ...request, status: "delivered", deliveredAt: new Date().toISOString(), codeExpiresAt: undefined }
+          : request),
+      }));
+      toast.success("Handover verified. Order marked delivered.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "The handover code could not be verified");
+    } finally { setDeliveryActionId(null); }
+  }
+  async function refreshCommerce() {
+    try {
+      const snapshot = await loadLiveCommerceSnapshot();
+      setState((current) => mergeLiveCommerce(current, snapshot, session));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Orders could not be refreshed");
+    }
+  }
   function cancel(order: Order) { const fee = cancellationCharge(order); if (!confirm(`Cancellation charge: ${money(fee)} based on the current fulfilment stage. Send to Operations for final review?`)) return; const reason = prompt("Cancellation reason"); if (!reason) return; setState((s) => ({ ...s, orders: s.orders.map((x) => x.id === order.id ? { ...x, status: "Cancellation requested", cancellationFee: fee } : x), cancellations: [{ id: id("CAN"), orderId: order.id, customerEmail: session.email, reason, aiDecision: `Review with estimated charge ${money(fee)}`, confidence: 91, status: "Awaiting operations" }, ...s.cancellations], notifications: [notice("operations@sheplates.demo", "operations", "Cancellation review", `${order.id}: proposed charge ${money(fee)}.`), ...s.notifications] })); }
   function locate(order: Order) { navigator.geolocation?.getCurrentPosition((position) => { setState((s) => ({ ...s, orders: s.orders.map((x) => x.id === order.id ? { ...x, trackingLatitude: position.coords.latitude, trackingLongitude: position.coords.longitude } : x), notifications: [notice(order.customerEmail, "customer", "Live location updated", `${order.id} location was refreshed by the vendor.`), ...s.notifications] })); toast.success("Live delivery position updated"); }, () => toast.error("Allow location access on the delivery device"), { enableHighAccuracy: true, maximumAge: 0 }); }
   async function assign(order: Order, staffId: string) { try { if (isLiveSupabaseMode()) await assignLiveDeliveryStaff(order.id, staffId === "unassigned" ? undefined : staffId); const nextAssignments = staffId === "unassigned" ? state.assignments.filter((x) => x.orderId !== order.id) : [{ id: id("ASN"), orderId: order.id, staffId, assignedAt: now() }, ...state.assignments.filter((x) => x.orderId !== order.id)]; setState((s) => ({ ...s, assignments: nextAssignments, notifications: staffId === "unassigned" ? s.notifications : [notice(order.customerEmail, "customer", "Delivery person assigned", `${state.staff.find((x) => x.id === staffId)?.name || "Your delivery person"} will handle ${order.id}.`), ...s.notifications] })); toast.success(staffId === "unassigned" ? "Delivery assignment cleared" : "Delivery person assigned"); } catch (error) { toast.error(error instanceof Error ? error.message : "Delivery assignment could not be saved"); } }
@@ -2192,12 +2296,12 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
   const customerSchedules = scope === "customer" ? state.schedules.filter((item) => item.customerEmail === session.email && (item.status || "Active") === "Active").length : 0;
   const customerOpenRequirements = scope === "customer" ? state.requirements.filter((item) => item.customerEmail === session.email && item.status !== "Awarded").length : 0;
 
-  return <div className="space-y-6"><Heading eyebrow="ORDER JOURNEY" title={scope === "customer" ? "Orders & live tracking" : scope === "vendor" ? "Fulfilment & tracking" : "Platform order control"} body={scope === "vendor" ? "Paid orders remain visible for every future delivery date. Use Today, Tomorrow or a date filter to plan fulfilment and assign an active delivery person." : "Track paid orders, fulfilment status and delivery progress."} />
-    {scope === "customer" ? <div className="sp-mobile-metric-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Paid orders" value={String(baseOrders.length)} icon={Package} tone="green" /><Metric label="Active schedules" value={String(customerSchedules)} icon={CalendarDays} tone="blue" /><Metric label="Open requirements" value={String(customerOpenRequirements)} icon={ListChecks} tone="violet" /><Metric label="Order value" value={money(totalValue)} icon={CreditCard} tone="amber" /></div> : <><div className="sp-mobile-metric-grid grid gap-3 sm:grid-cols-3"><Metric label="Orders in view" value={String(orders.length)} icon={Package} tone="green" /><Metric label="Value in view" value={money(dayValue)} icon={IndianRupee} tone="amber" /><Metric label="All future order value" value={money(totalValue)} icon={CalendarDays} tone="blue" /></div><div className="surface-card flex flex-wrap items-center gap-2 rounded-3xl p-3">{([['today','Today'],['tomorrow','Tomorrow'],['all','All dates'],['custom','Choose date']] as const).map(([value,label]) => <button key={value} onClick={() => setDateMode(value)} className={`rounded-xl px-4 py-2 text-sm font-black ${dateMode === value ? "bg-[#171914] text-white" : "bg-stone-50 text-stone-600"}`}>{label}</button>)}{dateMode === "custom" && <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} className={`${inputClass} max-w-48`} />}</div></>}
+return <div className="space-y-6"><Heading eyebrow="ORDER JOURNEY" title={scope === "customer" ? "Orders & live tracking" : scope === "vendor" ? "Fulfilment & tracking" : "Platform order control"} body={scope === "vendor" ? "Paid orders remain visible for every future delivery date. Use Today, Tomorrow or a date filter to plan fulfilment and assign an active delivery person." : "Track paid orders, fulfilment status and delivery progress."} action={isLiveSupabaseMode() && scope !== "operations" ? <Button onClick={() => void refreshCommerce()} variant="outline" className="rounded-xl"><RefreshCcw />Refresh orders</Button> : undefined} />    {scope === "customer" ? <div className="sp-mobile-metric-grid grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Paid orders" value={String(baseOrders.length)} icon={Package} tone="green" /><Metric label="Active schedules" value={String(customerSchedules)} icon={CalendarDays} tone="blue" /><Metric label="Open requirements" value={String(customerOpenRequirements)} icon={ListChecks} tone="violet" /><Metric label="Order value" value={money(totalValue)} icon={CreditCard} tone="amber" /></div> : <><div className="sp-mobile-metric-grid grid gap-3 sm:grid-cols-3"><Metric label="Orders in view" value={String(orders.length)} icon={Package} tone="green" /><Metric label="Value in view" value={money(dayValue)} icon={IndianRupee} tone="amber" /><Metric label="All future order value" value={money(totalValue)} icon={CalendarDays} tone="blue" /></div><div className="surface-card flex flex-wrap items-center gap-2 rounded-3xl p-3">{([['today','Today'],['tomorrow','Tomorrow'],['all','All dates'],['custom','Choose date']] as const).map(([value,label]) => <button key={value} onClick={() => setDateMode(value)} className={`rounded-xl px-4 py-2 text-sm font-black ${dateMode === value ? "bg-[#171914] text-white" : "bg-stone-50 text-stone-600"}`}>{label}</button>)}{dateMode === "custom" && <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} className={`${inputClass} max-w-48`} />}</div></>}
     {orders.length ? <div className="space-y-4">
       {orders.sort((a, b) => a.date.localeCompare(b.date)).map((order) => {
         const assignment = state.assignments.find((item) => item.orderId === order.id);
         const person = state.staff.find((item) => item.id === assignment?.staffId);
+        const thirdPartyDelivery = state.thirdPartyDeliveries.find((request) => request.orderId === order.id);
         const available = state.staff.filter((item) => item.vendorId === order.vendorId && item.active);
         const product = order.productId ? state.products.find((item) => item.id === order.productId) : undefined;
         const details = [
@@ -2213,15 +2317,34 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
               <div className="flex flex-wrap items-center gap-2"><b>{order.description}</b><Status>{order.status}</Status><Status className={order.payment === "Paid" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : ""}>{order.payment}</Status><span className="font-mono text-xs text-stone-400">{order.id}</span></div>
               <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 xl:grid-cols-5">{details.map(([label, value]) => <OrderDetail key={label} label={label} value={value} />)}</div>
               {order.status === "Out for delivery" && <div className="mt-4"><MapPreview lat={order.trackingLatitude || vendor?.latitude} lng={order.trackingLongitude || vendor?.longitude} radius={0} label="Live delivery position" /></div>}
+              {order.mode === "Third-party delivery" && thirdPartyDelivery && <div className="mt-4 rounded-2xl border border-violet-200 bg-violet-50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2"><b className="text-sm text-violet-950">3rd Party Delivery Request</b><Status>{thirdPartyDelivery.status}</Status></div>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-violet-950">{thirdPartyDelivery.notes}</p>
+                {scope === "vendor" && thirdPartyDelivery.status === "pending" && <Button disabled={deliveryActionId === order.id} size="sm" onClick={() => void acceptThirdPartyRequest(order)} className="mt-3 rounded-xl bg-violet-700 hover:bg-violet-800">{deliveryActionId === order.id ? "Accepting…" : "Accept delivery request"}</Button>}
+                {scope === "customer" && thirdPartyDelivery.status === "pending" && <p className="mt-3 text-xs text-violet-900">The vendor must accept this request before you can issue the handover code.</p>}
+                {scope === "customer" && thirdPartyDelivery.status === "accepted" && <div className="mt-3 space-y-3">
+                  <p className="text-xs text-violet-900">Issue a secure, one-time code for handover. The code expires after 30 minutes and can be displayed only when first issued.</p>
+                  {deliveryCodes[order.id] && <div className="rounded-xl border border-violet-200 bg-white p-3 text-center">
+                    <div className="font-mono text-2xl font-black tracking-[0.3em] text-violet-950">{deliveryCodes[order.id].code}</div>
+                    <div className="mt-1 text-xs text-violet-800">Expires {new Date(deliveryCodes[order.id].expiresAt).toLocaleTimeString()}</div>
+                  </div>}
+                  <Button disabled={deliveryActionId === order.id} size="sm" onClick={() => void issueThirdPartyCode(order)} variant="outline" className="rounded-xl border-violet-300">{deliveryActionId === order.id ? "Issuing…" : deliveryCodes[order.id] ? "Issue replacement code" : "Show handover code"}</Button>
+                </div>}
+                {scope === "vendor" && thirdPartyDelivery.status === "accepted" && <div className="mt-3 flex flex-wrap items-end gap-2">
+                  <Field label="Customer handover code"><input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={verificationInputs[order.id] || ""} onChange={(event) => setVerificationInputs((current) => ({ ...current, [order.id]: event.target.value.replace(/\D/g, "").slice(0, 6) }))} placeholder="6-digit code" className={`${inputClass} w-40 font-mono tracking-widest`} /></Field>
+                  <Button disabled={deliveryActionId === order.id || (verificationInputs[order.id] || "").length !== 6} size="sm" onClick={() => void verifyThirdPartyCode(order)} className="rounded-xl bg-violet-700 hover:bg-violet-800">{deliveryActionId === order.id ? "Verifying…" : "Verify & mark delivered"}</Button>
+                </div>}
+                {scope === "customer" && thirdPartyDelivery.status === "delivered" && <p className="mt-3 text-sm font-bold text-emerald-800">Handover verified. This order has been delivered.</p>}
+                {thirdPartyDelivery.status === "locked" && <p className="mt-3 text-sm font-bold text-red-700">Code verification is locked after five incorrect attempts.</p>}
+              </div>}
             </div>
             <div className="flex flex-wrap gap-2">
               {scope === "customer" ? <>
-                <Button size="sm" variant="outline" disabled={["Completed", "Cancelled", "Cancellation requested", "Preparing", "Out for delivery"].includes(order.status)} onClick={() => setRescheduling(order)}><CalendarDays />Reschedule</Button>
-                {order.status === "Completed" && product && <Button size="sm" onClick={() => setRatingOrder(order)} className="bg-[#e3a008] hover:bg-[#c98a00]"><Star />{state.reviews.some((review) => review.productId === product.id && review.customerEmail === session.email) ? "Edit rating" : "Rate"}</Button>}
+               <Button size="sm" variant="outline" disabled={["Completed", "Delivered", "Cancelled", "Cancellation requested", "Preparing", "Out for delivery"].includes(order.status)} onClick={() => setRescheduling(order)}><CalendarDays />Reschedule</Button>
+                {["Completed", "Delivered"].includes(order.status) && product && <Button size="sm" onClick={() => setRatingOrder(order)} className="bg-[#e3a008] hover:bg-[#c98a00]"><Star />{state.reviews.some((review) => review.productId === product.id && review.customerEmail === session.email) ? "Edit rating" : "Rate"}</Button>}
               </> : <>
                 <Select value={person?.id || "unassigned"} onValueChange={(staffId) => void assign(order, staffId)}><SelectTrigger className="w-44"><SelectValue placeholder="Assign delivery" /></SelectTrigger><SelectContent><SelectItem value="unassigned">Not assigned</SelectItem>{available.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
-                <Select value={order.status} onValueChange={(value) => void update(order, value as Order["status"])}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{["Scheduled", "Confirmed", "Preparing", "Ready", "Out for delivery", "Ready for pickup", "Completed"].map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select>
-                {scope === "vendor" && order.status === "Out for delivery" && <Button size="sm" onClick={() => locate(order)} className="bg-[#5ba400]"><MapPinned />Share live position</Button>}
+{order.mode !== "Third-party delivery" && <Select value={order.status} onValueChange={(value) => void update(order, value as Order["status"])}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{["Scheduled", "Confirmed", "Preparing", "Ready", "Out for delivery", "Ready for pickup", "Completed"].map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select>}                {scope === "vendor" && order.status === "Out for delivery" && <Button size="sm" onClick={() => locate(order)} className="bg-[#5ba400]"><MapPinned />Share live position</Button>}
               </>}
             </div>
           </div>

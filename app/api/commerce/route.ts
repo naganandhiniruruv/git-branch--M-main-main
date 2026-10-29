@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { generateDeliveryVerificationCode, hashDeliveryVerificationCode } from "@/lib/third-party-delivery.mjs";
 
 type Role = "customer" | "vendor" | "operations" | "admin";
 
@@ -38,6 +39,7 @@ function recurrence(value: string) {
 }
 
 function fulfilment(value: string) {
+  if (/third[\s-]*party/i.test(value)) return "third_party_delivery";
   return /pickup/i.test(value) ? "self_pickup" : "vendor_delivery";
 }
 
@@ -45,6 +47,7 @@ function resolveFulfilmentMode(vendor: { delivery_enabled?: boolean | null; pick
   const deliveryEnabled = vendor?.delivery_enabled !== false;
   const pickupEnabled = vendor?.pickup_enabled === true;
   const requested = fulfilment(requestedMode);
+  if (requested === "third_party_delivery") return requested;
   if (requested === "self_pickup" && pickupEnabled) return "self_pickup";
   if (requested === "vendor_delivery" && deliveryEnabled) return "vendor_delivery";
   if (deliveryEnabled) return "vendor_delivery";
@@ -116,6 +119,16 @@ async function commerceSnapshot(ctx: Awaited<ReturnType<typeof identity>>) {
   const [orders, schedules] = await Promise.all([orderQuery, schedulesQuery]);
   if (orders.error) throw orders.error;
   if (schedules.error) throw schedules.error;
+  const orderIds = (orders.data || []).map((order) => String(order.id));
+  const deliveryRequests = await admin.from("third_party_delivery_requests")
+    .select("order_id,customer_id,vendor_id,customer_notes,status,accepted_at,code_expires_at,code_issued_count,delivered_at,created_at,updated_at")
+    .in("order_id", orderIds);
+  const deliveryMigrationMissing = Boolean(deliveryRequests.error && (
+    deliveryRequests.error.code === "42P01" ||
+    deliveryRequests.error.code === "PGRST205" ||
+    /third_party_delivery_requests.*(does not exist|not found)|could not find the table .*third_party_delivery_requests/i.test(deliveryRequests.error.message || "")
+  ));
+  if (deliveryRequests.error && !deliveryMigrationMissing) throw deliveryRequests.error;
 
   let staff: unknown[] = [];
   let assignments: Array<{ delivery_staff_id?: unknown; [key: string]: unknown }> = [];
@@ -158,7 +171,11 @@ async function commerceSnapshot(ctx: Awaited<ReturnType<typeof identity>>) {
     cart = draft.cart;
     cartItems = draft.items;
   }
-  return { orders: orders.data || [], schedules: schedules.data || [], staff, assignments, cart, cartItems };
+  return {
+    orders: orders.data || [], schedules: schedules.data || [], staff, assignments, cart, cartItems,
+    thirdPartyDeliveries: deliveryRequests.data || [],
+    thirdPartyDeliveryAvailable: !deliveryMigrationMissing,
+  };
 }
 
 export async function GET(request: Request) {
@@ -213,6 +230,12 @@ export async function POST(request: Request) {
       if (profile.role !== "customer") return NextResponse.json({ error: "Customer access required." }, { status: 403 });
       const deliveryAddress = String(body.deliveryAddress || "").trim();
       if (!deliveryAddress) return NextResponse.json({ error: "Choose or enter a delivery address before checkout." }, { status: 400 });
+      const requestedMode = String(body.mode || "Vendor delivery");
+      const isThirdParty = fulfilment(requestedMode) === "third_party_delivery";
+      const customerNotes = String(body.deliveryInstructions || "").trim();
+      if (isThirdParty && (!customerNotes || customerNotes.length > 1000)) {
+        return NextResponse.json({ error: "Enter delivery instructions (up to 1,000 characters) for third-party delivery." }, { status: 400 });
+      }
       const draft = await draftCartForCustomer(admin, profile.id);
       const cartId = draft.cart?.id ? String(draft.cart.id) : "";
       if (!cartId || !draft.items.length) return NextResponse.json({ error: "Your cart is empty." }, { status: 409 });
@@ -235,7 +258,7 @@ export async function POST(request: Request) {
       const orderIds: string[] = [];
       for (const [vendorId, items] of grouped.entries()) {
         const vendor = await admin.from("vendors").select("delivery_enabled,pickup_enabled").eq("id", vendorId).maybeSingle();
-        const fulfilmentMode = resolveFulfilmentMode(vendor.data, String(body.mode || "Vendor delivery"));
+        const fulfilmentMode = resolveFulfilmentMode(vendor.data, requestedMode);
         if (!fulfilmentMode) return NextResponse.json({ error: "This vendor does not currently support delivery or pickup." }, { status: 409 });
         let vendorBaseTotal = 0; let customerTotal = 0;
         const orderItems = items.map((item) => {
@@ -249,6 +272,12 @@ export async function POST(request: Request) {
         const inserted = await admin.from("orders").insert({ order_number: orderNumber(), customer_id: profile.id, vendor_id: vendorId, vendor_base_total: vendorBaseTotal, markup_total: Math.max(0, customerTotal - vendorBaseTotal), tax_amount: 0, delivery_fee: 0, customer_total: customerTotal, delivery_address: deliveryAddress, fulfilment_mode: fulfilmentMode, scheduled_date: scheduledDate, scheduled_slot: scheduledSlot, status: "awarded" }).select("id,order_number").single();
         if (inserted.error) throw inserted.error;
         orderIds.push(inserted.data.id);
+        if (fulfilmentMode === "third_party_delivery") {
+          const requestInsert = await admin.from("third_party_delivery_requests").insert({
+            order_id: inserted.data.id, customer_id: profile.id, vendor_id: vendorId, customer_notes: customerNotes,
+          });
+          if (requestInsert.error) throw requestInsert.error;
+        }
         const itemInsert = await admin.from("order_items").insert(orderItems.map((item) => ({ order_id: inserted.data.id, ...item })));
         if (itemInsert.error) throw itemInsert.error;
         const payment = await admin.from("payments").insert({ order_id: inserted.data.id, customer_id: profile.id, amount: customerTotal, status: "pending", provider: "checkout" });
@@ -267,6 +296,14 @@ export async function POST(request: Request) {
       const vendorRow = await admin.from("vendors").select("delivery_enabled,pickup_enabled").eq("id", product.vendor_id).maybeSingle();
       const fulfilmentMode = resolveFulfilmentMode(vendorRow.data, String(body.mode || "Vendor delivery"));
       if (!fulfilmentMode) return NextResponse.json({ error: "This vendor does not currently support delivery or pickup." }, { status: 409 });
+      const requestedRecurrence = recurrence(String(body.recurrence || "once"));
+      const customerNotes = String(body.deliveryInstructions || "").trim();
+      if (fulfilmentMode === "third_party_delivery" && requestedRecurrence !== "once") {
+        return NextResponse.json({ error: "Third-party delivery is available for one-time plans only." }, { status: 400 });
+      }
+      if (fulfilmentMode === "third_party_delivery" && (!customerNotes || customerNotes.length > 1000)) {
+        return NextResponse.json({ error: "Enter delivery instructions (up to 1,000 characters) for third-party delivery." }, { status: 400 });
+      }
       const quantity = Math.max(0.001, Number(body.quantity || 1));
       const customerPrice = Math.max(0, Number(body.customerPrice || product.vendor_base_price));
       const startDate = String(body.startDate || "");
@@ -276,11 +313,11 @@ export async function POST(request: Request) {
       const scheduleInsert = await admin.from("product_schedules").insert({
         customer_id: profile.id, vendor_id: product.vendor_id, menu_item_id: product.id,
         start_date: startDate, end_date: endDate || null,
-        recurrence: recurrence(String(body.recurrence || "once")),
+        recurrence: requestedRecurrence,
         weekdays: Array.isArray(body.weekdays) ? body.weekdays.map((d) => weekdayMap[String(d)]).filter((n) => Number.isInteger(n)) : [],
         scheduled_slot: String(body.slot || "Vendor to confirm"), quantity, unit: String(body.unit || product.unit),
         fulfilment_mode: fulfilmentMode, status: "awaiting_payment",
-        whatsapp_reminder_enabled: body.whatsappReminder !== false,
+        whatsapp_reminder_enabled: fulfilmentMode === "third_party_delivery" ? false : body.whatsappReminder !== false,
       }).select("id").single();
       if (scheduleInsert.error) throw scheduleInsert.error;
       const orderInsert = await admin.from("orders").insert({
@@ -291,6 +328,12 @@ export async function POST(request: Request) {
         scheduled_slot: String(body.slot || "Vendor to confirm"), status: "awarded",
       }).select("id,order_number").single();
       if (orderInsert.error) throw orderInsert.error;
+      if (fulfilmentMode === "third_party_delivery") {
+        const requestInsert = await admin.from("third_party_delivery_requests").insert({
+          order_id: orderInsert.data.id, customer_id: profile.id, vendor_id: String(product.vendor_id), customer_notes: customerNotes,
+        });
+        if (requestInsert.error) throw requestInsert.error;
+      }
       const itemInsert = await admin.from("order_items").insert({
         order_id: orderInsert.data.id, product_name: product.name, quantity, unit: String(body.unit || product.unit),
         vendor_base_price: Number(product.vendor_base_price), markup_percent: Number(product.vendor_base_price) > 0 ? Math.max(0, ((customerPrice / Number(product.vendor_base_price)) - 1) * 100) : 0,
@@ -308,11 +351,14 @@ export async function POST(request: Request) {
       const orderId = String(body.orderId || "");
       const { data: order } = await admin.from("orders").select("id,order_number,schedule_id,customer_id,vendor_id,customer_total,scheduled_date,scheduled_slot,fulfilment_mode,vendor_base_total,markup_total,tax_amount,delivery_fee,order_items(product_name,quantity,unit,vendor_base_price,markup_percent,customer_price),product_schedules(start_date,end_date,recurrence,weekdays)").eq("id", orderId).eq("customer_id", profile.id).maybeSingle();
       if (!order) return NextResponse.json({ error: "Order not found." }, { status: 404 });
+      const rawSchedule = Array.isArray(order.product_schedules) ? order.product_schedules[0] : order.product_schedules;
+      if (order.fulfilment_mode === "third_party_delivery" && rawSchedule && String(rawSchedule.recurrence) !== "once") {
+        return NextResponse.json({ error: "Third-party delivery is available for one-time plans only." }, { status: 400 });
+      }
       const updated = await admin.from("payments").update({ status: "paid", provider: String(body.method || "checkout").toLowerCase(), provider_reference: String(body.reference || `SIM-${Date.now()}`), updated_at: new Date().toISOString() }).eq("order_id", order.id).eq("customer_id", profile.id);
       if (updated.error) throw updated.error;
       await admin.from("orders").update({ status: "confirmed", updated_at: new Date().toISOString() }).eq("id", order.id);
       if (order.schedule_id) await admin.from("product_schedules").update({ status: "active", updated_at: new Date().toISOString() }).eq("id", order.schedule_id).eq("status", "awaiting_payment");
-      const rawSchedule = Array.isArray(order.product_schedules) ? order.product_schedules[0] : order.product_schedules;
       const dates = rawSchedule ? scheduleDates(rawSchedule as { start_date: string; end_date?: string | null; recurrence: string; weekdays?: number[] | null }) : [String(order.scheduled_date)];
       const firstItem = Array.isArray(order.order_items) ? order.order_items[0] : order.order_items;
       const remainingDates = dates.filter((date) => date !== String(order.scheduled_date));
@@ -338,6 +384,81 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, snapshot: await commerceSnapshot(ctx) });
     }
 
+    if (action === "accept_third_party_delivery") {
+      if (profile.role !== "vendor" || !profile.vendor_id) return NextResponse.json({ error: "Vendor access required." }, { status: 403 });
+      const accepted = await ctx.caller.rpc("accept_third_party_delivery", { p_order_id: String(body.orderId || "") });
+      if (accepted.error) throw accepted.error;
+      const result = accepted.data as { ok?: boolean; error?: string; status?: string } | null;
+      if (!result?.ok) {
+        const messages: Record<string, { message: string; status: number }> = {
+          unauthorized: { message: "Vendor access required.", status: 403 },
+          not_found: { message: "Third-party delivery request not found for this store.", status: 404 },
+          payment_required: { message: "The customer must complete payment before this request can be accepted.", status: 409 },
+          not_pending: { message: "This delivery request can no longer be accepted.", status: 409 },
+        };
+        const failure = messages[String(result?.error || "")] || { message: "The delivery request could not be accepted.", status: 409 };
+        return NextResponse.json({ error: failure.message }, { status: failure.status });
+      }
+      return NextResponse.json({ ok: true, status: "accepted" });
+    }
+
+    if (action === "issue_third_party_delivery_code") {
+      if (profile.role !== "customer") return NextResponse.json({ error: "Customer access required." }, { status: 403 });
+      const orderId = String(body.orderId || "");
+      const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!secret) return NextResponse.json({ error: "Secure code service is unavailable." }, { status: 503 });
+      const code = generateDeliveryVerificationCode();
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      const issued = await ctx.caller.rpc("issue_third_party_delivery_code", {
+        p_order_id: orderId,
+        p_code_hash: hashDeliveryVerificationCode(orderId, code, secret),
+        p_code_expires_at: expiresAt,
+      });
+      if (issued.error) throw issued.error;
+      const result = issued.data as { ok?: boolean; error?: string } | null;
+      if (!result?.ok) {
+        const messages: Record<string, { message: string; status: number }> = {
+          unauthorized: { message: "Customer access required.", status: 403 },
+          not_found: { message: "Third-party delivery request not found.", status: 404 },
+          not_accepted: { message: "Wait for the vendor to accept this delivery request before requesting a code.", status: 409 },
+          attempt_limit: { message: "This delivery request has reached its verification-attempt limit.", status: 429 },
+          issue_limit: { message: "This delivery request has reached its code-issue limit.", status: 429 },
+          invalid_code_request: { message: "A secure code could not be issued. Please try again.", status: 400 },
+        };
+        const failure = messages[String(result?.error || "")] || { message: "A delivery code could not be issued.", status: 409 };
+        return NextResponse.json({ error: failure.message }, { status: failure.status });
+      }
+      return NextResponse.json({ ok: true, code, expiresAt });
+    }
+
+    if (action === "verify_third_party_delivery_code") {
+      if (profile.role !== "vendor" || !profile.vendor_id) return NextResponse.json({ error: "Vendor access required." }, { status: 403 });
+      const orderId = String(body.orderId || "");
+      const code = String(body.code || "").trim();
+      if (!/^\d{6}$/.test(code)) return NextResponse.json({ error: "Enter the six-digit customer handover code." }, { status: 400 });
+      const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!secret) return NextResponse.json({ error: "Secure code service is unavailable." }, { status: 503 });
+      const verified = await ctx.caller.rpc("verify_third_party_delivery_code", {
+        p_order_id: orderId,
+        p_code_hash: hashDeliveryVerificationCode(orderId, code, secret),
+      });
+      if (verified.error) throw verified.error;
+      const result = verified.data as { ok?: boolean; error?: string; remaining_attempts?: number } | null;
+      if (!result?.ok) {
+        const messages: Record<string, { message: string; status: number }> = {
+          unauthorized: { message: "Vendor access required.", status: 403 },
+          not_found: { message: "Third-party delivery request not found for this store.", status: 404 },
+          already_delivered: { message: "This order has already been delivered.", status: 409 },
+          attempt_limit: { message: "Verification is locked after five incorrect attempts.", status: 429 },
+          code_not_issued: { message: "The customer has not issued a delivery code yet.", status: 409 },
+          expired: { message: "This delivery code has expired. Ask the customer to issue a new code.", status: 410 },
+          invalid_code: { message: `The code is incorrect. ${result?.remaining_attempts ?? 0} attempt(s) remain.`, status: 400 },
+        };
+        const failure = messages[String(result?.error || "")] || { message: "The delivery code could not be verified.", status: 409 };
+        return NextResponse.json({ error: failure.message }, { status: failure.status });
+      }
+      return NextResponse.json({ ok: true, status: "delivered" });
+    }
 
     if (action === "notify_nutrition_review") {
       if (profile.role !== "vendor" || !profile.vendor_id) return NextResponse.json({ error: "Vendor access required." }, { status: 403 });
@@ -391,9 +512,12 @@ export async function POST(request: Request) {
       if (!allowedStatuses.has(nextStatus)) {
         return NextResponse.json({ error: "Cancellation and unsupported order statuses are disabled." }, { status: 400 });
       }
-      const { data: order } = await admin.from("orders").select("id,vendor_id,customer_id,order_number").eq("id", orderId).maybeSingle();
+      const { data: order } = await admin.from("orders").select("id,vendor_id,customer_id,order_number,fulfilment_mode").eq("id", orderId).maybeSingle();
       if (!order) return NextResponse.json({ error: "Order not found." }, { status: 404 });
       if (profile.role === "vendor" && order.vendor_id !== profile.vendor_id) return NextResponse.json({ error: "This order belongs to another store." }, { status: 403 });
+      if (order.fulfilment_mode === "third_party_delivery" && nextStatus === "completed") {
+        return NextResponse.json({ error: "Third-party orders can only be marked delivered after the handover code is verified." }, { status: 409 });
+      }
       const updated = await admin.from("orders").update({ status: nextStatus, updated_at: new Date().toISOString() }).eq("id", orderId);
       if (updated.error) throw updated.error;
       await admin.from("notifications").insert({ recipient_id: order.customer_id, kind: "order", title: `Order ${String(body.status || "updated").toLowerCase()}`, body: `${order.order_number} is now ${String(body.status || "updated").toLowerCase()}.`, entity_type: "order", entity_id: orderId });

@@ -338,6 +338,15 @@ export async function loadLiveVendorWorkspace(vendorId: string) {
   return { vendor: vendor.data as LiveVendorRow, products: productRows || [], document: documents.data?.[0] || null };
 }
 
+export async function loadLiveVendorWorkspaceForOwner(userId: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) throw new Error("Live account access is not available in this deployment.");
+  const result = await supabase.from("vendors").select("id").eq("owner_id", userId)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (result.error) throw result.error;
+  return result.data ? loadLiveVendorWorkspace(result.data.id) : null;
+}
+
 export async function loadLiveOperationsWorkspace() {
   const supabase = getSupabaseBrowserClient();
   if (!supabase) throw new Error("Live account access is not available in this deployment.");
@@ -626,8 +635,9 @@ export async function submitLiveVendorApplication(input: {
     storage_path: objectPath, expiry_date: input.expiryDate, verification_status: "submitted",
   });
   if (document.error) throw document.error;
-  const profile = await supabase.from("profiles").update({ vendor_id: vendor.data.id }).eq("id", input.userId);
+  const profile = await supabase.from("profiles").update({ vendor_id: vendor.data.id }).eq("id", input.userId).select("id").maybeSingle();
   if (profile.error) throw profile.error;
+  if (!profile.data) throw new Error("Your vendor application was saved, but your account could not be linked to it. Please contact Operations before submitting again.");
   return vendor.data.id as string;
 }
 
@@ -674,6 +684,8 @@ export type LiveCommerceSnapshot = {
   schedules: Array<Record<string, unknown>>;
   staff: Array<Record<string, unknown>>;
   assignments: Array<Record<string, unknown>>;
+  thirdPartyDeliveries: Array<Record<string, unknown>>;
+  thirdPartyDeliveryAvailable: boolean;
   cart?: Record<string, unknown> | null;
   cartItems?: Array<Record<string, unknown>>;
 };
@@ -696,7 +708,7 @@ export async function loadLiveCommerceSnapshot() {
 
 export async function createLiveScheduledCheckout(input: {
   productId: string; startDate: string; endDate?: string; recurrence: string; weekdays: string[]; slot: string;
-  quantity: number; unit: string; mode: string; customerPrice: number; perDeliveryTotal: number; total: number; whatsappReminder?: boolean;
+  quantity: number; unit: string; mode: string; deliveryInstructions?: string; customerPrice: number; perDeliveryTotal: number; total: number; whatsappReminder?: boolean;
 }) {
   return commerceRequest({ action: "create_schedule", ...input });
 }
@@ -705,8 +717,24 @@ export async function syncLiveCart(input: { items: Array<{ productId: string; qu
   return commerceRequest({ action: "sync_cart", items: input.items, createdBy: input.createdBy || "customer" });
 }
 
-export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string; deliveryAddress?: string }) {
+export async function checkoutLiveCart(input?: { scheduledDate?: string; slot?: string; deliveryAddress?: string; mode?: string; deliveryInstructions?: string }) {
   return commerceRequest({ action: "checkout_cart", ...(input || {}) });
+}
+
+export async function acceptLiveThirdPartyDelivery(orderId: string) {
+  return commerceRequest({ action: "accept_third_party_delivery", orderId });
+}
+
+export async function issueLiveThirdPartyDeliveryCode(orderId: string) {
+  const result = await commerceRequest({ action: "issue_third_party_delivery_code", orderId });
+  if (typeof result.code !== "string" || typeof result.expiresAt !== "string") {
+    throw new Error("The delivery code response was incomplete.");
+  }
+  return { code: result.code, expiresAt: result.expiresAt };
+}
+
+export async function verifyLiveThirdPartyDeliveryCode(orderId: string, code: string) {
+  return commerceRequest({ action: "verify_third_party_delivery_code", orderId, code });
 }
 
 export async function markLiveOrderPaid(input: { orderId: string; method: string; reference?: string }) {

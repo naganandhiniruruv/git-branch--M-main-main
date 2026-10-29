@@ -5,7 +5,7 @@ create extension if not exists pgcrypto;
 create type public.app_role as enum ('customer','vendor','operations','admin');
 create type public.verification_status as enum ('draft','submitted','under_review','changes_required','verified','rejected','expired');
 create type public.operational_status as enum ('inactive','active','paused','suspended');
-create type public.order_status as enum ('awarded','confirmed','preparing','ready','out_for_delivery','ready_for_pickup','completed','cancellation_requested','cancelled');
+create type public.order_status as enum ('awarded','confirmed','preparing','ready','out_for_delivery','ready_for_pickup','completed','delivered','cancellation_requested','cancelled');
 create type public.cancellation_status as enum ('awaiting_operations','approved','rejected','refunded');
 
 create table public.profiles (
@@ -194,10 +194,26 @@ create table public.orders (
   delivery_fee numeric(12,2) not null default 0,
   customer_total numeric(12,2) not null,
   delivery_address text,
-  fulfilment_mode text not null check (fulfilment_mode in ('vendor_delivery','self_pickup')),
+  fulfilment_mode text not null check (fulfilment_mode in ('vendor_delivery','self_pickup','third_party_delivery')),
   scheduled_date date not null check (scheduled_date > current_date),
   scheduled_slot text not null,
   status public.order_status not null default 'awarded',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.third_party_delivery_requests (
+  order_id uuid primary key references public.orders(id) on delete cascade,
+  customer_id uuid not null references public.profiles(id) on delete cascade,
+  vendor_id uuid not null references public.vendors(id) on delete cascade,
+  customer_notes text not null check (char_length(trim(customer_notes)) between 1 and 1000),
+  status text not null default 'pending' check (status in ('pending','accepted','delivered','expired','locked')),
+  accepted_at timestamptz,
+  code_hash text,
+  code_expires_at timestamptz,
+  code_issued_count integer not null default 0 check (code_issued_count between 0 and 5),
+  failed_attempts integer not null default 0 check (failed_attempts between 0 and 5),
+  delivered_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -724,6 +740,7 @@ alter table public.rfq_vendor_invitations enable row level security;
 alter table public.vendor_quotes enable row level security;
 alter table public.vendor_quote_items enable row level security;
 alter table public.orders enable row level security;
+alter table public.third_party_delivery_requests enable row level security;
 alter table public.order_items enable row level security;
 alter table public.payments enable row level security;
 alter table public.cancellation_requests enable row level security;
@@ -811,6 +828,11 @@ create policy orders_party_read on public.orders for select using (customer_id=a
 -- Orders are created only by a server-side award/payment function using the service role.
 -- No direct authenticated insert policy is intentionally granted.
 create policy orders_vendor_ops_update on public.orders for update using (public.owns_vendor(vendor_id) or public.current_app_role() in ('operations','admin'));
+revoke all on table public.third_party_delivery_requests from public, anon, authenticated;
+grant select (order_id, customer_id, vendor_id, customer_notes, status, accepted_at, code_expires_at, code_issued_count, delivered_at, created_at, updated_at)
+  on public.third_party_delivery_requests to authenticated;
+create policy third_party_delivery_party_read on public.third_party_delivery_requests for select
+using (customer_id=auth.uid() or public.owns_vendor(vendor_id) or public.current_app_role() in ('operations','admin'));
 create policy order_items_party_read on public.order_items for select using (exists(select 1 from public.orders o where o.id=order_id and (o.customer_id=auth.uid() or public.owns_vendor(o.vendor_id) or public.current_app_role() in ('operations','admin'))));
 create policy payments_customer_ops_read on public.payments for select using (customer_id=auth.uid() or public.current_app_role() in ('operations','admin'));
 create policy cancellations_party_read on public.cancellation_requests for select using (customer_id=auth.uid() or public.current_app_role() in ('operations','admin') or exists(select 1 from public.orders o where o.id=order_id and public.owns_vendor(o.vendor_id)));
