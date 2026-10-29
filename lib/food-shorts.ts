@@ -112,14 +112,21 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
       }
     }
     if (role === "vendor" && vendorId) {
-      const res = await sb.from("food_shorts").select("id,vendor_id,product_id,shop_link,title,caption,video_url,thumb_url,duration_s,reach_km,status,view_count,created_at,food_short_likes(count)").eq("vendor_id", vendorId).neq("status", "removed").order("created_at", { ascending: false });
-      if (!res.error) { const name = vendors.find((v) => v.id === vendorId)?.businessName || ""; setRemoteMine(((res.data || []) as unknown as RemoteRow[]).map((r) => mapRemote(r, name))); }
+      const res = await sb.rpc("vendor_food_shorts");
+      if (res.error) {
+        console.error("Vendor Food Shorts refresh failed", res.error);
+        setFeedError(res.error.message);
+      } else {
+        setFeedError("");
+        const name = vendors.find((v) => v.id === vendorId)?.businessName || "";
+        setRemoteMine(((res.data || []) as RemoteRow[]).map((r) => mapRemote(r, name)));
+      }
     }
   }, [mode, role, vendorId, lat, lng, vendors]);
   useEffect(() => { const initial = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(initial); }, [refresh]);
 
   useEffect(() => {
-    if (role !== "customer") return;
+    if (mode !== "remote" || (role !== "customer" && role !== "vendor")) return;
     const refreshOnFocus = () => { if (document.visibilityState === "visible") void refresh(); };
     const interval = window.setInterval(() => void refresh(), 30_000);
     window.addEventListener("focus", refreshOnFocus);
@@ -129,7 +136,7 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
       window.removeEventListener("focus", refreshOnFocus);
       document.removeEventListener("visibilitychange", refreshOnFocus);
     };
-  }, [role, refresh]);
+  }, [mode, role, refresh]);
 
   useEffect(() => {
     if (mode !== "local") return;
@@ -281,12 +288,27 @@ export function useFoodShorts(user: ShortsUser, vendors: ShortsVendor[], viewer:
     persist({ ...current, likes: { ...current.likes, [key]: has ? mineLikes.filter((x) => x !== id) : [...mineLikes, id] } });
   }, [liked, mode, userId, email, persist, refresh]);
 
-  const recordView = useCallback((id: string) => {
-    if (viewedRef.current.has(id) || id.startsWith("sample-")) return;
+  const recordView = useCallback(async (id: string) => {
+    if (role !== "customer" || viewedRef.current.has(id) || id.startsWith("sample-")) return;
     viewedRef.current.add(id);
-    if (mode === "remote") { void getSupabaseBrowserClient()?.rpc("record_short_view", { p_short_id: id }); return; }
+    if (mode === "remote") {
+      try {
+        const sb = getSupabaseBrowserClient();
+        if (!sb) throw new Error("Food Shorts service is unavailable");
+        const res = await sb.rpc("record_short_view", { p_short_id: id });
+        if (res.error) throw new Error(res.error.message);
+        if (typeof res.data === "number") {
+          setRemoteFeed((current) => current.map((short) => short.id === id ? { ...short, viewCount: res.data } : short));
+        }
+      } catch (error) {
+        viewedRef.current.delete(id);
+        console.error("Food Short view could not be recorded", error);
+        throw error;
+      }
+      return;
+    }
     const current = storeRef.current; persist({ ...current, views: { ...current.views, [id]: (current.views[id] || 0) + 1 } });
-  }, [mode, persist]);
+  }, [role, mode, persist]);
 
   return { mode, nearby, following, forVendor, mine, liked, feedError, publish, setStatus, remove, toggleLike, recordView, refresh };
 }

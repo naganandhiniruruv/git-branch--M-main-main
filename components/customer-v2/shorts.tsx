@@ -51,7 +51,7 @@ export function ShortsRail({ shorts, onOpen, title = "Food Shorts near you", onS
 /** Full-screen vertical player. Scroll or use the arrows to move between shorts; only the
  * short in view plays. */
 export function ShortsViewer({ shorts, startIndex, onClose, liked, onLike, onView, onOpenVendor }: {
-  shorts: FoodShort[]; startIndex: number; onClose: () => void; liked: string[]; onLike: (id: string) => void; onView: (id: string) => void; onOpenVendor?: (vendorId: string) => void;
+  shorts: FoodShort[]; startIndex: number; onClose: () => void; liked: string[]; onLike: (id: string) => void; onView: (id: string) => void | Promise<void>; onOpenVendor?: (vendorId: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const slides = useRef<(HTMLElement | null)[]>([]);
@@ -93,7 +93,7 @@ export function ShortsViewer({ shorts, startIndex, onClose, liked, onLike, onVie
 
   useEffect(() => {
     videos.current.forEach((video, i) => { if (!video) return; if (i === active) { video.currentTime = 0; void video.play().catch(() => undefined); } else video.pause(); });
-    const current = shorts[active]; if (current) onView(current.id);
+    const current = shorts[active]; if (current) void onView(current.id);
   }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const current = shorts[active];

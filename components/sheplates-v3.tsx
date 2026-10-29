@@ -1085,7 +1085,7 @@ export function ShePlatesV3() {
             : [{ customerEmail: session.email, productId: product.id, addedAt: new Date().toISOString() }, ...current.wishlist],
         };
       })} onClaimDrop={claimDrop} shorts={vendorProfileId ? shorts.forVendor(vendorProfileId, 30) : []} onOpenShorts={openShorts} />
-      {shortsViewer.state && <ShortsViewer shorts={shortsViewer.state.shorts} startIndex={shortsViewer.state.start} liked={shorts.liked} onLike={(id) => void shorts.toggleLike(id).catch((e) => toast.error(e instanceof Error ? e.message : "Could not save your like"))} onView={shorts.recordView} onOpenVendor={setVendorProfileId} onClose={shortsViewer.close} />}
+      {shortsViewer.state && <ShortsViewer shorts={shortsViewer.state.shorts} startIndex={shortsViewer.state.start} liked={shorts.liked} onLike={(id) => void shorts.toggleLike(id).catch((e) => toast.error(e instanceof Error ? e.message : "Could not save your like"))} onView={(id) => shorts.recordView(id).catch((e) => toast.error(e instanceof Error ? e.message : "Could not record this view"))} onOpenVendor={setVendorProfileId} onClose={shortsViewer.close} />}
       <ScheduleDialog product={planProduct} close={() => setPlanProduct(null)} session={session} state={state} setState={setState} initialStartDate={tomorrow()} onCreated={() => { setVendorProfileId(null); setActive("Cart"); }} />
     </main> : <div className="mx-auto flex max-w-425 gap-0 lg:gap-4">
       {menuOpen && <button className="sp-mobile-nav-overlay lg:hidden" onClick={() => setMenuOpen(false)} aria-label="Close navigation" />}

@@ -89,6 +89,7 @@ export function VendorShortsManager({ vendor, products, shorts }: { vendor: Mana
 
     <section aria-label="Your Food Shorts" className="space-y-3">
       <h2 className="font-black">Your Food Shorts ({shorts.mine.length})</h2>
+      {shorts.feedError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{shorts.feedError}</p>}
       {shorts.mine.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" data-testid="my-shorts">{shorts.mine.map((s) => <article key={s.id} data-testid="my-short" className="surface-card overflow-hidden rounded-[26px]">
         <div className="relative aspect-[9/16] max-h-72 w-full bg-stone-900">
           {playing === s.id && s.videoUrl ? <video src={s.videoUrl} controls autoPlay playsInline className="h-full w-full object-contain" /> : <>{s.thumbUrl ? <Image src={s.thumbUrl} alt="" fill unoptimized sizes="(max-width: 768px) 100vw, 50vw" className="object-cover" /> : <div className="grid h-full place-items-center text-stone-400"><Video className="size-10" /></div>}<button type="button" onClick={() => setPlaying(s.id)} disabled={!s.videoUrl} aria-label={`Play ${s.title}`} className="absolute inset-0 grid place-items-center bg-black/10 text-white disabled:hidden"><span className="grid size-12 place-items-center rounded-full bg-black/55">▶</span></button></>}
