@@ -136,7 +136,11 @@ test.describe("Customer portal — redesigned shell (demo data)", () => {
     await openAsCustomer(page);
     await tab(page, "Maps").click();
     await expect(page.locator(".sp-vendor-map")).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator(".sp-map-photo-pin").first()).toBeVisible();
+    const pin = page.locator(".sp-map-photo-pin").first();
+    await expect(pin).toBeVisible();
+    await pin.hover();
+    await expect(page.locator(".sp-vendor-map .sp-map-vendor-tooltip")).toBeVisible();
+    await expect(page.locator(".sp-vendor-map .sp-map-vendor-tooltip")).toHaveText(/\S+/);
     await page.getByRole("tab", { name: "Following" }).click();
     await expect(page.getByText("You're not following any vendors yet")).toBeVisible();
     await page.getByRole("tab", { name: "Nearby" }).click();

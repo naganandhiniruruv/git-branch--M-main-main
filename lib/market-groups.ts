@@ -4,7 +4,7 @@
 // show an empty state until vendors can list in them.
 export const MARKET_GROUPS = [
   { key: "Ready to Cook", emoji: "🍳", tint: "#fff0e6", match: ["Ready to cook"] },
-  { key: "Meals", emoji: "🍛", tint: "#ffe9ef", match: ["Home food"] },
+  { key: "Meals", emoji: "🍛", tint: "#ffe9ef", match: ["Home food", "Caterer"] },
   { key: "Meat & Seafood", emoji: "🍗", tint: "#ffe5e5", match: ["Meat & fish", "Eggs"] },
   { key: "Vegetables & Fruits", emoji: "🥦", tint: "#e8f6e8", match: ["Vegetables"] },
   { key: "Grocery & Staples", emoji: "🛍️", tint: "#f1eaff", match: ["Groceries", "Rice & staples"] },

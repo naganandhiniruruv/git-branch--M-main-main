@@ -34,6 +34,9 @@ test.describe("Maps tab — interactive nearby-vendors map", () => {
 
     const pin = map.locator(".sp-map-photo-pin").first();
     await expect(pin).toBeVisible({ timeout: 10_000 });
+    await pin.hover();
+    await expect(map.locator(".sp-map-vendor-tooltip")).toBeVisible();
+    await expect(map.locator(".sp-map-vendor-tooltip")).toHaveText(/\S+/);
     await pin.click();
     await page.getByRole("button", { name: "View", exact: true }).click();
 

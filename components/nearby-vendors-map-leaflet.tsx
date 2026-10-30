@@ -1,7 +1,7 @@
 "use client";
  
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, Circle, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Circle, Popup, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import { HANDLE_HTML, YOU_HTML, haversineKm, personPinHtml, photoPinHtml, pointAtDistanceNorth, spreadOverlaps, vendorPinHtml, zoomForRadius, type MapPerson, type MapVendor } from "./map-shared";
 export type { MapPerson, MapVendor } from "./map-shared";
@@ -180,6 +180,7 @@ export function NearbyVendorsMapLeaflet({
                 {onSelectVendor && <button onClick={() => onSelectVendor(vendor.id)} className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#c62653] px-2 py-1.5 text-xs font-black text-white">View products</button>}
               </div>
             </Popup>}
+            <Tooltip direction="top" offset={[0, -8]} className="sp-map-vendor-tooltip">{vendor.name}</Tooltip>
           </Marker>
         ))}
       </MapContainer>

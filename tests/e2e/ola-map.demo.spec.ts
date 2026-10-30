@@ -51,7 +51,11 @@ test.describe("Map on Ola Maps (stand-in service)", () => {
     await map.getByRole("button", { name: "Zoom in" }).click();
     await map.getByRole("button", { name: "Zoom out" }).click();
     await map.getByRole("button", { name: "Centre the map on my location" }).click();
-    await page.locator(".sp-map-photo-pin").first().click();
+    const pin = page.locator(".sp-map-photo-pin").first();
+    await pin.hover();
+    await expect(map.locator(".sp-map-vendor-tooltip")).toBeVisible();
+    await expect(map.locator(".sp-map-vendor-tooltip")).toHaveText(/\S+/);
+    await pin.click();
     await expect(page.getByRole("button", { name: "View" }).first()).toBeVisible();
   });
 

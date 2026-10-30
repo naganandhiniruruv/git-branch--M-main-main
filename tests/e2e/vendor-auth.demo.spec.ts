@@ -15,6 +15,19 @@ test("new vendor can sign in again after signing out", async ({ page }) => {
   await page.locator("form").getByRole("button", { name: "Create account" }).click();
   await expect(page.getByText("Vendor onboarding · 1/4")).toBeVisible();
 
+  const category = page.getByRole("combobox").first();
+  await category.click();
+  await expect(page.getByRole("option", { name: "Snacks", exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: "Caterer", exact: true })).toBeVisible();
+  await page.getByRole("option", { name: "Caterer", exact: true }).click();
+  await expect(category).toContainText("Caterer");
+  await category.click();
+  await page.getByRole("option", { name: "Snacks", exact: true }).click();
+  await expect(category).toContainText("Snacks");
+  await category.click();
+  await page.getByRole("option", { name: "Other", exact: true }).click();
+  await expect(page.getByPlaceholder("Enter your business category")).toBeVisible();
+
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.evaluate(() => document.querySelectorAll("[data-sonner-toast]").forEach((toast) => toast.remove()));
   await page.getByRole("button", { name: /^Vendor( \/ Team)?$/ }).click();

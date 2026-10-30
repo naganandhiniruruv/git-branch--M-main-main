@@ -32,12 +32,15 @@ export type Fulfilment = {
 export const categories = [
   { name: "Milk & dairy", emoji: "🥛", color: "#e9f4ff" },
   { name: "Home food", emoji: "🍱", color: "#fff0df" },
+  { name: "Caterer", emoji: "🍽️", color: "#fff0df" },
   { name: "Meat & fish", emoji: "🍗", color: "#ffe5e5" },
   { name: "Vegetables", emoji: "🥬", color: "#e7f7e8" },
   { name: "Groceries", emoji: "🛍️", color: "#f1eaff" },
   { name: "Eggs", emoji: "🥚", color: "#fff8d8" },
   { name: "Bakery", emoji: "🥖", color: "#f8eadf" },
+  { name: "Snacks", emoji: "🍿", color: "#fff6d6" },
   { name: "Rice & staples", emoji: "🍚", color: "#eef0ef" },
+  { name: "Other", emoji: "📦", color: "#f1f6e8" },
 ];
 
 // A controlled vector-icon set instead of raw emoji: renders identically across

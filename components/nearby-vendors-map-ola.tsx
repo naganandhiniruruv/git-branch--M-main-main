@@ -123,6 +123,9 @@ export function NearbyVendorsMapOla({
       const el = iconEl(pin.html, pin.size, vendor.name);
       if (vendor.id === selectedId) el.style.zIndex = "5";
       const marker = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([vendor.lng, vendor.lat]);
+      const hoverPopup = new maplibregl.Popup({ offset: 18, closeButton: false, closeOnClick: false, className: "sp-map-vendor-tooltip" }).setText(vendor.name);
+      el.addEventListener("mouseenter", () => hoverPopup.setLngLat(marker.getLngLat()).addTo(map));
+      el.addEventListener("mouseleave", () => hoverPopup.remove());
       if (onPinClick) el.addEventListener("click", (e) => { e.stopPropagation(); onPinClick(vendor.id); });
       else {
         const body = document.createElement("div"); body.className = "min-w-[160px] text-sm";
