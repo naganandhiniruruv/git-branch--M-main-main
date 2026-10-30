@@ -2167,7 +2167,7 @@ function VendorArea({ active, session, state, setState, shorts }: { active: stri
   if (active === "AI insights") return <VendorAIInsights vendor={vendor} state={state} session={session} />;
   if (active === "Online shop & POS") return <StorefrontPos vendor={vendor} state={state} setState={setState} session={session} />;
   if (active === "Store & radius") return <StoreRadius vendor={vendor} setState={setState} session={session} />;
-  if (active === "Verification") return <VerificationView vendor={vendor} setState={setState} session={session} />;
+  if (active === "Verification" || active === "Profile" || active === "Vendor profile") return <VerificationView vendor={vendor} setState={setState} session={session} />;
   if (active === "Catalog") return <Catalog vendor={vendor} state={state} setState={setState} session={session} />;
   if (active === "Food Drops") return <FoodDropsManager vendor={vendor} state={state} setState={setState} />;
   if (active === "Food Shorts") return <VendorShortsManager vendor={vendor} products={state.products.filter((p) => p.vendorId === vendor.id && p.active)} shorts={shorts} />;
@@ -2587,12 +2587,68 @@ function StoreRadius({ vendor, setState, session }: { vendor: Vendor; setState: 
     </div>
   </div>;
 }
+const THREE_VENDOR_PLANS = [
+  {
+    name: "Crave" as const,
+    price: 699,
+    description: "Pre-orders, subscriptions, delivery fleet management and Food Stories.",
+    features: [
+      "Pre-orders & scheduled subscriptions",
+      "Delivery fleet & staff assignment",
+      "Customer Food Stories & storefront",
+    ],
+  },
+  {
+    name: "Thrive" as const,
+    price: 799,
+    popular: true,
+    description: "Everything in Crave, plus daily Food Drops for surplus promotions.",
+    features: [
+      "Everything in Crave plan",
+      "Daily Food Drops (evening promotions)",
+      "Surplus deals badge & live countdown",
+    ],
+  },
+  {
+    name: "Crown" as const,
+    price: 999,
+    description: "Everything in Thrive, plus Request for Quote (RFQ) with AI assistance.",
+    features: [
+      "Everything in Thrive plan",
+      "Request for Quote (RFQ) opportunities",
+      "AI quotation assistant & demand alerts",
+    ],
+  },
+];
+const vendorPlanRank: Record<string, number> = { Taster: 0, Crave: 1, Thrive: 2, Crown: 3 };
+
 function VerificationView({ vendor, setState, session }: { vendor: Vendor; setState: React.Dispatch<React.SetStateAction<V3State>>; session: DemoSession }) {
   const [editing, setEditing] = useState(false);
   const [certificate, setCertificate] = useState(vendor.fssaiNumber || "");
   const [fileName, setFileName] = useState(vendor.certificateName || "");
   const [certificateFile, setCertificateFile] = useState<File | null>(null);
   const [expiry, setExpiry] = useState(vendor.expiryDate || "");
+  const [upgradingTo, setUpgradingTo] = useState<string | null>(null);
+
+  async function upgradePlan(newPlan: Vendor["plan"]) {
+    if (vendor.plan === newPlan) return;
+    setUpgradingTo(newPlan);
+    try {
+      if (isLiveSupabaseMode()) {
+        await saveLiveVendorPlan(vendor.id, newPlan.toLowerCase() as "taster" | "crave" | "thrive" | "crown");
+      }
+      setState((s) => ({
+        ...s,
+        vendors: s.vendors.map((x) => x.id === vendor.id ? { ...x, plan: newPlan } : x),
+        audit: [audit(session, "Vendor upgraded plan", `${vendor.businessName} switched to ${newPlan}`), ...s.audit],
+      }));
+      toast.success(`Plan upgraded to ${newPlan}!`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Plan upgrade could not be saved");
+    } finally {
+      setUpgradingTo(null);
+    }
+  }
   async function save(resubmit = false) {
     if (!certificate.trim()) return toast.error("Enter the certification / licence number");
     try {
@@ -2606,9 +2662,90 @@ function VerificationView({ vendor, setState, session }: { vendor: Vendor; setSt
     } catch (error) { toast.error(error instanceof Error ? error.message : "Verification details could not be saved"); }
   }
   return <div className="space-y-6"><Heading eyebrow="TRUST & COMPLIANCE" title="Vendor verification" body="Review your certification details at any time. If information changes, edit and resubmit it for Operations review." action={<Button variant="outline" onClick={() => setEditing((v) => !v)} className="rounded-xl"><Pencil />{editing ? "Close editor" : "Edit details"}</Button>} />
-    <div className="surface-card rounded-[28px] p-6"><div className="flex items-center gap-4"><div className="grid size-12 place-items-center rounded-2xl bg-[#eff7e5] text-[#5ba400]"><FileCheck2 /></div><div className="flex-1"><h3 className="font-black">{vendor.businessName}</h3><p className="text-sm text-stone-500">{vendor.address}</p></div><Status>{vendor.verification}</Status></div>
-      {editing ? <div className="mt-6 grid gap-4 sm:grid-cols-2"><Field label="Certification / licence number"><input value={certificate} onChange={(e) => setCertificate(e.target.value)} className={inputClass} /></Field><Field label="Expiry date"><input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} className={inputClass} /></Field><Field label="Certificate file"><label className="flex h-11 cursor-pointer items-center rounded-2xl border bg-white px-3.5 text-sm font-bold"><input type="file" className="hidden" accept=".pdf,image/*" onChange={(e) => { const next = e.target.files?.[0] || null; setCertificateFile(next); setFileName(next?.name || fileName); }} /><Upload className="mr-2 size-4" />{fileName || "Choose file"}</label></Field><div className="flex items-end gap-2"><Button onClick={() => void save(false)} variant="outline" className="h-11 rounded-xl">Save only</Button><Button onClick={() => void save(true)} className="h-11 rounded-xl bg-[#5ba400]">Resubmit for review</Button></div></div> : <div className="mt-6 grid gap-3 sm:grid-cols-3"><Review label="Certificate" value={vendor.fssaiNumber || "Not added"} /><Review label="Uploaded file" value={vendor.certificateName || "Not added"} /><Review label="Expires" value={vendor.expiryDate || "Not set"} /></div>}
-    </div></div>;
+    <div className="surface-card rounded-[28px] p-6"><div className="flex items-center gap-4"><div className="grid size-12 place-items-center rounded-2xl bg-[#eff7e5] text-[#5ba400]"><FileCheck2 /></div><div className="flex-1"><h3 className="font-black">{vendor.businessName}</h3><p className="text-sm text-stone-500">{vendor.address}</p></div><div className="flex flex-wrap items-center gap-2"><Status>{vendor.verification}</Status><Status className="border-stone-200 bg-stone-50 text-stone-700 font-bold">{vendor.plan} plan</Status></div></div>
+      {editing ? <div className="mt-6 grid gap-4 sm:grid-cols-2"><Field label="Certification / licence number"><input value={certificate} onChange={(e) => setCertificate(e.target.value)} className={inputClass} /></Field><Field label="Expiry date"><input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} className={inputClass} /></Field><Field label="Certificate file"><label className="flex h-11 cursor-pointer items-center rounded-2xl border bg-white px-3.5 text-sm font-bold"><input type="file" className="hidden" accept=".pdf,image/*" onChange={(e) => { const next = e.target.files?.[0] || null; setCertificateFile(next); setFileName(next?.name || fileName); }} /><Upload className="mr-2 size-4" />{fileName || "Choose file"}</label></Field><div className="flex items-end gap-2"><Button onClick={() => void save(false)} variant="outline" className="h-11 rounded-xl">Save only</Button><Button onClick={() => void save(true)} className="h-11 rounded-xl bg-[#5ba400]">Resubmit for review</Button></div></div> : <div className="mt-6 grid gap-3 sm:grid-cols-3"><Review label="Certificate" value={vendor.fssaiNumber || "Not added"} /><Review label="Uploaded file" value={vendor.certificateName || "Not added"} /><Review label="Expires" value={vendor.expiryDate || "Not set"} /><Review label="Current plan" value={`${vendor.plan} plan`} /></div>}
+    </div>
+    <div className="surface-card rounded-[28px] p-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="text-xl font-black">Subscription plans</h3>
+            <Status className="border-emerald-200 bg-emerald-50 text-emerald-800 font-bold">Active: {vendor.plan}</Status>
+          </div>
+          <p className="mt-1 text-sm text-stone-500">
+            Choose a plan to upgrade your store capabilities, food drops, and quotation opportunities.
+          </p>
+        </div>
+      </div>
+      <div className="mt-6 grid gap-4 lg:grid-cols-3">
+        {THREE_VENDOR_PLANS.map((plan) => {
+          const isCurrent = vendor.plan === plan.name;
+          const isHigher = (vendorPlanRank[plan.name] ?? 0) > (vendorPlanRank[vendor.plan || "Taster"] ?? 0);
+          return (
+            <div
+              key={plan.name}
+              data-plan-card={plan.name}
+              className={`flex flex-col justify-between rounded-3xl border p-5 transition ${
+                isCurrent
+                  ? "border-[#5ba400] bg-[#f7faf3] shadow-sm ring-2 ring-[#5ba400]/20"
+                  : "border-stone-200/80 bg-white hover:border-stone-300"
+              }`}
+            >
+              <div>
+                <div className="flex items-center justify-between">
+                  <h4 className="text-lg font-black">{plan.name}</h4>
+                  {isCurrent ? (
+                    <Status className="border-emerald-200 bg-emerald-100 text-emerald-800 font-bold">Current plan</Status>
+                  ) : plan.popular ? (
+                    <span className="rounded-full bg-[#ef3d3d]/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-[#ef3d3d]">Popular</span>
+                  ) : null}
+                </div>
+                <div className="mt-4 flex items-baseline gap-1">
+                  <span className="text-2xl font-black">{money(plan.price)}</span>
+                  <span className="text-xs font-bold text-stone-500">/ month + GST</span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-stone-500">{plan.description}</p>
+                <ul className="mt-4 space-y-2 border-t border-stone-100 pt-3 text-xs text-stone-600">
+                  {plan.features.map((feat) => (
+                    <li key={feat} className="flex items-center gap-2">
+                      <Check className="size-3.5 text-[#5ba400] shrink-0" />
+                      <span>{feat}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="mt-5">
+                {isCurrent ? (
+                  <Button disabled variant="outline" className="w-full rounded-xl border-emerald-300 bg-emerald-50 text-emerald-800 font-black opacity-90 cursor-default">
+                    <Check className="mr-1.5 size-4" />Current plan
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    onClick={() => void upgradePlan(plan.name)}
+                    disabled={upgradingTo === plan.name}
+                    className={`w-full rounded-xl font-black ${
+                      isHigher
+                        ? "bg-[#5ba400] hover:bg-[#4d8b00] text-white shadow-sm"
+                        : "bg-stone-900 hover:bg-stone-800 text-white"
+                    }`}
+                  >
+                    {upgradingTo === plan.name ? (
+                      "Updating…"
+                    ) : isHigher ? (
+                      <><Sparkles className="mr-1.5 size-4" />Upgrade to {plan.name}</>
+                    ) : (
+                      <>Switch to {plan.name}</>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  </div>;
 }
 
 function Catalog({ vendor, state, setState, session }: { vendor: Vendor; state: V3State; setState: React.Dispatch<React.SetStateAction<V3State>>; session: DemoSession }) {
