@@ -19,7 +19,8 @@ export default defineConfig({
     { name: "mobile-chromium", use: { ...devices["Pixel 7"] } },
   ],
   webServer: {
-    command: "NEXT_PUBLIC_DEMO_MODE=true npx vite --port 5174",
+    command: "npx vite --port 5174",
+    env: { NEXT_PUBLIC_DEMO_MODE: "true" },
     url: "http://localhost:5174",
     reuseExistingServer: true,
     timeout: 60_000,

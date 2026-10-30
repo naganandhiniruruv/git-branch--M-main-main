@@ -2251,7 +2251,8 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
   const dayValue = orders.reduce((sum, item) => sum + item.total, 0);
   const totalValue = baseOrders.reduce((sum, item) => sum + item.total, 0);
 
-  async function update(order: Order, status: Order["status"]) { try { if (isLiveSupabaseMode()) await updateLiveOrderStatus(order.id, status); setState((s) => ({ ...s, orders: s.orders.map((x) => x.id === order.id ? { ...x, status } : x) })); showDeviceNotification(`Order ${status}`, order.description); toast.success("Order status updated"); } catch (error) { toast.error(error instanceof Error ? error.message : "Order status could not be saved"); } }
+  const DELIVERY_STATUSES: Order["status"][] = ["Preparing", "Ready", "Out for delivery", "Ready for pickup", "Completed", "Delivered"];
+  async function update(order: Order, status: Order["status"]) { try { if (DELIVERY_STATUSES.includes(status) && order.date > todayISO()) { toast.error(`This order is scheduled for ${order.date}. Delivery actions are only allowed on or after the delivery date.`); return; } if (isLiveSupabaseMode()) await updateLiveOrderStatus(order.id, status); setState((s) => ({ ...s, orders: s.orders.map((x) => x.id === order.id ? { ...x, status } : x) })); showDeviceNotification(`Order ${status}`, order.description); toast.success("Order status updated"); } catch (error) { toast.error(error instanceof Error ? error.message : "Order status could not be saved"); } }
   async function acceptThirdPartyRequest(order: Order) {
     setDeliveryActionId(order.id);
     try {
@@ -2282,7 +2283,7 @@ function OrdersV4({ session, state, setState, scope, vendor }: { session: DemoSe
       toast.error(error instanceof Error ? error.message : "A handover code could not be issued");
     } finally { setDeliveryActionId(null); }
   }
-  async function verifyThirdPartyCode(order: Order) {
+  async function verifyThirdPartyCode(order: Order) { if (order.date > todayISO()) { toast.error(`This order is scheduled for ${order.date}. Handover verification is only allowed on or after the delivery date.`); return; }
     const code = verificationInputs[order.id] || "";
     setDeliveryActionId(order.id);
     try {
@@ -2364,7 +2365,7 @@ return <div className="space-y-6"><Heading eyebrow="ORDER JOURNEY" title={scope 
                 {["Completed", "Delivered"].includes(order.status) && product && <Button size="sm" onClick={() => setRatingOrder(order)} className="bg-[#e3a008] hover:bg-[#c98a00]"><Star />{state.reviews.some((review) => review.productId === product.id && review.customerEmail === session.email) ? "Edit rating" : "Rate"}</Button>}
               </> : <>
                 <Select value={person?.id || "unassigned"} onValueChange={(staffId) => void assign(order, staffId)}><SelectTrigger className="w-44"><SelectValue placeholder="Assign delivery" /></SelectTrigger><SelectContent><SelectItem value="unassigned">Not assigned</SelectItem>{available.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
-{order.mode !== "Third-party delivery" && <Select value={order.status} onValueChange={(value) => void update(order, value as Order["status"])}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{["Scheduled", "Confirmed", "Preparing", "Ready", "Out for delivery", "Ready for pickup", "Completed"].map((status) => <SelectItem key={status} value={status}>{status}</SelectItem>)}</SelectContent></Select>}                {scope === "vendor" && order.status === "Out for delivery" && <Button size="sm" onClick={() => locate(order)} className="bg-[#5ba400]"><MapPinned />Share live position</Button>}
+{order.mode !== "Third-party delivery" && <Select value={order.status} onValueChange={(value) => void update(order, value as Order["status"])}><SelectTrigger className="w-44"><SelectValue /></SelectTrigger><SelectContent>{["Scheduled", "Confirmed", "Preparing", "Ready", "Out for delivery", "Ready for pickup", "Completed"].map((status) => <SelectItem key={status} value={status} disabled={DELIVERY_STATUSES.includes(status as Order["status"]) && order.date > todayISO()}>{status}</SelectItem>)}</SelectContent></Select>}                {scope === "vendor" && order.status === "Out for delivery" && <Button size="sm" onClick={() => locate(order)} className="bg-[#5ba400]"><MapPinned />Share live position</Button>}
               </>}
             </div>
           </div>

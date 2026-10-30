@@ -512,11 +512,15 @@ export async function POST(request: Request) {
       if (!allowedStatuses.has(nextStatus)) {
         return NextResponse.json({ error: "Cancellation and unsupported order statuses are disabled." }, { status: 400 });
       }
-      const { data: order } = await admin.from("orders").select("id,vendor_id,customer_id,order_number,fulfilment_mode").eq("id", orderId).maybeSingle();
+      const { data: order } = await admin.from("orders").select("id,vendor_id,customer_id,order_number,fulfilment_mode,scheduled_date").eq("id", orderId).maybeSingle();
       if (!order) return NextResponse.json({ error: "Order not found." }, { status: 404 });
       if (profile.role === "vendor" && order.vendor_id !== profile.vendor_id) return NextResponse.json({ error: "This order belongs to another store." }, { status: 403 });
       if (order.fulfilment_mode === "third_party_delivery" && nextStatus === "completed") {
         return NextResponse.json({ error: "Third-party orders can only be marked delivered after the handover code is verified." }, { status: 409 });
+      }
+      const deliveryStatuses = new Set(["preparing", "ready", "out_for_delivery", "ready_for_pickup", "completed", "delivered"]);
+      if (deliveryStatuses.has(nextStatus) && order.scheduled_date && isFutureDate(order.scheduled_date)) {
+        return NextResponse.json({ error: `This order is scheduled for ${order.scheduled_date}. Delivery actions are only allowed on or after the delivery date.` }, { status: 400 });
       }
       const updated = await admin.from("orders").update({ status: nextStatus, updated_at: new Date().toISOString() }).eq("id", orderId);
       if (updated.error) throw updated.error;
