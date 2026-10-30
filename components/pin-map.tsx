@@ -18,11 +18,14 @@ function ring(lat: number, lng: number, km: number): GeoJSON.Feature<GeoJSON.Pol
   return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [pts] } };
 }
 
-function OlaPin({ lat, lng, radiusKm, access, onFail }: { lat: number; lng: number; radiusKm: number; access: OlaAccess; onFail: () => void }) {
+function OlaPin({ lat, lng, radiusKm, access, onFail, onChange }: { lat: number; lng: number; radiusKm: number; access: OlaAccess; onFail: () => void; onChange?: (point: { lat: number; lng: number }) => void }) {
   const box = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const marker = useRef<maplibregl.Marker | null>(null);
-  const fail = useRef(onFail); fail.current = onFail;
+  const fail = useRef(onFail);
+  useEffect(() => { fail.current = onFail; }, [onFail]);
+  const change = useRef(onChange);
+  useEffect(() => { change.current = onChange; }, [onChange]);
   useEffect(() => {
     if (!box.current) return;
     const m = new maplibregl.Map({
@@ -53,7 +56,11 @@ function OlaPin({ lat, lng, radiusKm, access, onFail }: { lat: number; lng: numb
     });
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     const el = document.createElement("div"); el.className = "sp-map-icon"; el.style.width = "28px"; el.style.height = "28px"; el.innerHTML = YOU_HTML;
-    marker.current = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([lng, lat]).addTo(m);
+    marker.current = new maplibregl.Marker({ element: el, anchor: "center", draggable: Boolean(onChange) }).setLngLat([lng, lat]).addTo(m);
+    marker.current.on("dragend", () => {
+      const position = marker.current?.getLngLat();
+      if (position) change.current?.({ lat: Number(position.lat.toFixed(6)), lng: Number(position.lng.toFixed(6)) });
+    });
     map.current = m;
     return () => { window.clearTimeout(timer); m.remove(); map.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -69,20 +76,20 @@ function OlaPin({ lat, lng, radiusKm, access, onFail }: { lat: number; lng: numb
 }
 
 function Recenter({ lat, lng, radiusKm }: { lat: number; lng: number; radiusKm: number }) { const m = useMap(); useEffect(() => { m.setView([lat, lng], zoomFor(radiusKm), { animate: true }); }, [m, lat, lng, radiusKm]); return null; }
-function StandardPin({ lat, lng, radiusKm }: { lat: number; lng: number; radiusKm: number }) {
+function StandardPin({ lat, lng, radiusKm, onChange }: { lat: number; lng: number; radiusKm: number; onChange?: (point: { lat: number; lng: number }) => void }) {
   return <div className="h-full w-full" data-map-engine="standard"><MapContainer center={[lat, lng]} zoom={zoomFor(radiusKm)} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }} attributionControl={false}>
     <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}" maxZoom={19} />
     <Recenter lat={lat} lng={lng} radiusKm={radiusKm} />
     {radiusKm > 0 && <Circle center={[lat, lng]} radius={radiusKm * 1000} pathOptions={{ color: "#c62653", weight: 2, fillColor: "#c62653", fillOpacity: 0.08 }} />}
-    <Marker position={[lat, lng]} icon={pinIcon} />
+    <Marker position={[lat, lng]} icon={pinIcon} draggable={Boolean(onChange)} eventHandlers={onChange ? { dragend: (event) => { const position = event.target.getLatLng(); onChange({ lat: Number(position.lat.toFixed(6)), lng: Number(position.lng.toFixed(6)) }); } } : undefined} />
   </MapContainer></div>;
 }
 
-export function PinMap({ lat, lng, radiusKm = 0 }: { lat: number; lng: number; radiusKm?: number }) {
+export function PinMap({ lat, lng, radiusKm = 0, onChange }: { lat: number; lng: number; radiusKm?: number; onChange?: (point: { lat: number; lng: number }) => void }) {
   const [engine, setEngine] = useState<"loading" | "ola" | "standard">("loading");
   const [access, setAccess] = useState<OlaAccess | null>(null);
   useEffect(() => { let alive = true; void loadOlaAccess().then((a) => { if (!alive) return; setAccess(a); setEngine(a ? "ola" : "standard"); }); return () => { alive = false; }; }, []);
   if (engine === "loading") return <div className="grid h-full w-full place-items-center bg-stone-100 text-sm text-stone-400">Loading map…</div>;
-  if (engine === "ola" && access) return <OlaPin lat={lat} lng={lng} radiusKm={radiusKm} access={access} onFail={() => { resetOlaAccess(); setEngine("standard"); }} />;
-  return <StandardPin lat={lat} lng={lng} radiusKm={radiusKm} />;
+  if (engine === "ola" && access) return <OlaPin lat={lat} lng={lng} radiusKm={radiusKm} access={access} onFail={() => { resetOlaAccess(); setEngine("standard"); }} onChange={onChange} />;
+  return <StandardPin lat={lat} lng={lng} radiusKm={radiusKm} onChange={onChange} />;
 }
